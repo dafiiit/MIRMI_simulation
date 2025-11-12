@@ -2,7 +2,7 @@ import os
 from glob import glob
 from setuptools import find_packages, setup
 
-package_name = 'my_robot_simulation'
+package_name = 'mirmi_docking_sim'
 
 setup(
     name=package_name,
@@ -22,8 +22,8 @@ setup(
         (os.path.join('share', package_name, 'config'), 
             glob(os.path.join('config', '*.yaml'))),
         # Modell-Dateien installieren (rekursiv)
-        (os.path.join('share', package_name, 'models', 'vehicle_blue'), 
-            glob(os.path.join('models', 'vehicle_blue', '*'))),
+        (os.path.join('share', package_name, 'models', 'robot'), 
+            glob(os.path.join('models', 'robot', '*'))),
         # Hütte-Modell installieren
         (os.path.join('share', package_name, 'models', 'april_hut'), 
             glob(os.path.join('models', 'april_hut', '*'))),
@@ -42,8 +42,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'fake_camera_info_pub = my_robot_simulation.fake_camera_info_pub:main',
-            'apriltag_visualizer = my_robot_simulation.apriltag_visualizer:main',
+            'camera_info_sync = mirmi_docking_sim.camera_info_sync:main',
+            'apriltag_visualizer = mirmi_docking_sim.apriltag_visualizer:main',
         ],
     },
 )

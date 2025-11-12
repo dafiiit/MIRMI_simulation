@@ -1,6 +1,6 @@
 <?xml version="1.0" ?>
 <sdf version="1.8">
-  <model name='vehicle_blue' canonical_link='chassis'>
+  <model name='robot' canonical_link='chassis'>
     <pose>0 0 0 0 0 0</pose>
 
     <link name='chassis'>
@@ -24,7 +24,7 @@
           </clip>
         </camera>
         <update_rate>30</update_rate>
-        <topic>/model/vehicle_blue/camera</topic> 
+        <topic>/model/robot/camera</topic> 
       </sensor>
     </link>
 

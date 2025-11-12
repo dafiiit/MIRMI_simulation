@@ -8,12 +8,12 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
-    pkg_my_robot_simulation = get_package_share_directory('my_robot_simulation')
+    pkg_mirmi_docking_sim = get_package_share_directory('mirmi_docking_sim')
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
 
-    models_path = os.path.join(pkg_my_robot_simulation, 'models')
-    world_path = os.path.join(pkg_my_robot_simulation, 'worlds', 'car_world.sdf')
-    bridge_config_path = os.path.join(pkg_my_robot_simulation, 'config', 'bridge.yaml')
+    models_path = os.path.join(pkg_mirmi_docking_sim, 'models')
+    world_path = os.path.join(pkg_mirmi_docking_sim, 'worlds', 'world.sdf')
+    bridge_config_path = os.path.join(pkg_mirmi_docking_sim, 'config', 'bridge.yaml')
 
     # 1. Umgebungsvariable für Modelle setzen
     existing_gz_path = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
@@ -45,8 +45,8 @@ def generate_launch_description():
     
     # 4. Camera Info Publisher
     camera_info_node = Node(
-        package='my_robot_simulation',
-        executable='fake_camera_info_pub',
+        package='mirmi_docking_sim',
+        executable='camera_info_sync',
         name='fake_camera_info_publisher'
     )
 
@@ -139,7 +139,7 @@ def generate_launch_description():
     
     # 7. AprilTag Visualizer - Zeichnet Detektionen auf das Bild
     visualizer_node = Node(
-        package='my_robot_simulation',
+        package='mirmi_docking_sim',
         executable='apriltag_visualizer',
         name='apriltag_visualizer',
         output='screen'

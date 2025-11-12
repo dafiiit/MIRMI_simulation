@@ -1,33 +1,33 @@
 # 1. Steuerbefehle (ROS -> Gazebo)
 - ros_topic_name: "/cmd_vel"
-  gz_topic_name: "/model/vehicle_blue/cmd_vel"
+  gz_topic_name: "/model/robot/cmd_vel"
   ros_type_name: "geometry_msgs/msg/Twist"
   gz_type_name: "gz.msgs.Twist"
   direction: ROS_TO_GZ
 
 # 2. Odometrie (Gazebo -> ROS)
 - ros_topic_name: "/odom"
-  gz_topic_name: "/vehicle_blue/odom"
+  gz_topic_name: "/robot/odom"
   ros_type_name: "nav_msgs/msg/Odometry"
   gz_type_name: "gz.msgs.Odometry"
   direction: GZ_TO_ROS
 
 # 3. Joint States (Gazebo -> ROS)
 - ros_topic_name: "/joint_states"
-  gz_topic_name: "/world/car_world/model/vehicle_blue/joint_state"
+  gz_topic_name: "/world/world/model/robot/joint_state"
   ros_type_name: "sensor_msgs/msg/JointState"
   gz_type_name: "gz.msgs.Model"
   direction: GZ_TO_ROS
 
 # NEUE EINTRÄGE FÜR DIE KAMERA
 - ros_topic_name: "/camera/image_raw"
-  gz_topic_name: "/model/vehicle_blue/camera"
+  gz_topic_name: "/model/robot/camera"
   ros_type_name: "sensor_msgs/msg/Image"
   gz_type_name: "gz.msgs.Image"
   direction: GZ_TO_ROS
 
 - ros_topic_name: "/camera/camera_info"
-  gz_topic_name: "/model/vehicle_blue/camera/camera_info"
+  gz_topic_name: "/model/robot/camera/camera_info"
   ros_type_name: "sensor_msgs/msg/CameraInfo"
   gz_type_name: "gz.msgs.CameraInfo"
   direction: GZ_TO_ROS
