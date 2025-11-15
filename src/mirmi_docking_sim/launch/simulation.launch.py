@@ -17,8 +17,9 @@ def generate_launch_description():
 
     # 1. Umgebungsvariable für Modelle setzen
     existing_gz_path = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
-    apriltag_models_path = '/home/david/gazebo_apriltag_harmonic/models'
-    new_gz_path = f"{models_path}:{apriltag_models_path}:{existing_gz_path}"
+    # apriltag_models_path = '/home/david/gazebo_apriltag_harmonic/models'
+    # new_gz_path = f"{models_path}:{apriltag_models_path}:{existing_gz_path}"
+    new_gz_path = f"{models_path}:{existing_gz_path}"
 
     set_env = SetEnvironmentVariable(
         name='GZ_SIM_RESOURCE_PATH',
@@ -59,7 +60,6 @@ def generate_launch_description():
         remappings=[
             ('image_rect', '/camera/image_raw'),
             ('camera_info', '/camera/camera_info'),
-            # Explizites Remapping für das annotierte Bild
             ('tag_detections_image', '/camera/tag_detections_image')
         ],
         parameters=[{
@@ -70,6 +70,8 @@ def generate_launch_description():
             'image_transport': 'raw',
             'publish_tag_detections_image': True,
             'publish_tf': True,
+            'z_aligned': False,
+            'z_up': False,
         }]
     )
         

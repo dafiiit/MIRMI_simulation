@@ -27,6 +27,26 @@ setup(
         # Hütte-Modell installieren
         (os.path.join('share', package_name, 'models', 'april_hut'), 
             glob(os.path.join('models', 'april_hut', '*'))),
+        #April Tags in Modell ordner
+        (os.path.join('share', package_name, 'models', 'Apriltag36_11_00001'), 
+            glob(os.path.join('models', 'Apriltag36_11_00001', 'model.*'))),
+        (os.path.join('share', package_name, 'models', 'Apriltag36_11_00001', 'materials', 'textures'), 
+            glob(os.path.join('models', 'Apriltag36_11_00001', 'materials', 'textures', '*.png'))),
+            
+        (os.path.join('share', package_name, 'models', 'Apriltag36_11_00002'), 
+            glob(os.path.join('models', 'Apriltag36_11_00002', 'model.*'))),
+        (os.path.join('share', package_name, 'models', 'Apriltag36_11_00002', 'materials', 'textures'), 
+            glob(os.path.join('models', 'Apriltag36_11_00002', 'materials', 'textures', '*.png'))),
+            
+        (os.path.join('share', package_name, 'models', 'Apriltag36_11_00003'), 
+            glob(os.path.join('models', 'Apriltag36_11_00003', 'model.*'))),
+        (os.path.join('share', package_name, 'models', 'Apriltag36_11_00003', 'materials', 'textures'), 
+            glob(os.path.join('models', 'Apriltag36_11_00003', 'materials', 'textures', '*.png'))),
+            
+        (os.path.join('share', package_name, 'models', 'Apriltag36_11_00004'), 
+            glob(os.path.join('models', 'Apriltag36_11_00004', 'model.*'))),
+        (os.path.join('share', package_name, 'models', 'Apriltag36_11_00004', 'materials', 'textures'), 
+            glob(os.path.join('models', 'Apriltag36_11_00004', 'materials', 'textures', '*.png'))),
         
     ],
     install_requires=['setuptools'],
