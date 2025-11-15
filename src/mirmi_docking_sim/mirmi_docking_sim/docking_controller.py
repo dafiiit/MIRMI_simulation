@@ -251,7 +251,7 @@ class DockingController(Node):
         if self.current_odom_pose is None:
             # Warten auf Odometrie
             if self.state.value > DockingState.LOCALIZING.value:
-                self.get_logger().warn("Warte auf Odometrie...", throttle_skip_count=30)
+                self.get_logger().warn("Warte auf Odometrie...", throttle_duration_sec=30.0)
             return
         
         current_pos_vec = np.array(self.current_odom_pose[:2])
@@ -395,7 +395,27 @@ class DockingController(Node):
             
         # --- 7. Endgültige Ausrichtung (Nur Drehen) ---
         if self.state == DockingState.FINAL_ALIGNMENT:
+            
+            # NEU: Prüfen, ob wir gerade ein "Nudge"-Manöver (10cm) fahren
+            if hasattr(self, '_align_relocating') and self._align_relocating:
+                now = self.get_clock().now()
+                time_since_relocate_start = (now - self._align_relocate_start_time).nanoseconds / 1e9
+                
+                # Fahre für 1.0 Sekunde mit 0.1 m/s (= 10cm)
+                RELOCATE_DURATION = 1.0 # Sekunden
+                RELOCATE_SPEED = 0.1    # m/s
+
+                if time_since_relocate_start < RELOCATE_DURATION: 
+                    self.publish_twist(RELOCATE_SPEED, 0.0) # Langsam vor
+                    return # WICHTIG: Schleife hier verlassen, bis Manöver fertig ist
+                else:
+                    self.publish_twist(0.0, 0.0) # Stopp
+                    self.get_logger().info("10cm Vorfahrt beendet. Versuche Ausrichtung erneut.")
+                    self._align_relocating = False # Manöver beendet
+                    # Führe den Rest der Funktion (den try-Block) normal aus
+            
             try:
+                # Normaler Versuch, das Tag zu finden
                 t = self.tf_buffer.lookup_transform(
                     'robot/chassis',
                     self.DOCKING_TARGET_FRAME,
@@ -406,8 +426,7 @@ class DockingController(Node):
                 # Nur Winkelfehler berechnen
                 angle_err = math.atan2(trans.y, trans.x)
 
-                # Toleranz für "gerade": z.B. 1.5 Grad
-                # (Du kannst 0.025 rad verkleinern, wenn es noch präziser sein muss)
+                # Toleranz für "gerade"
                 if abs(angle_err) < 0.001: # ~1.4 Grad
                     self.get_logger().info("✓ End-Ausrichtung abgeschlossen. Starte Einfahrt.")
                     self.publish_twist(0.0, 0.0)
@@ -415,11 +434,17 @@ class DockingController(Node):
                 else:
                     # P-Regler nur für Drehung
                     angular_vel = np.clip(2.5 * angle_err, -self.DOCKING_SPEED_ANGULAR, self.DOCKING_SPEED_ANGULAR)
-                    self.get_logger().info(f"Richte aus... Winkelfehler: {math.degrees(angle_err):.2f}°", throttle_skip_count=5)
+                    # KORREKTUR: throttle_skip_count ersetzt durch throttle_duration_sec
+                    self.get_logger().info(f"Richte aus... Winkelfehler: {math.degrees(angle_err):.2f}°", throttle_duration_sec=5.0)
                     self.publish_twist(0.0, angular_vel) # WICHTIG: linear_vel = 0.0
-            	except TransformException as e:
-            		self.get_logger().error(f"Tag '{self.DOCKING_TARGET_FRAME}' während Ausrichtung verloren! Gehe zurück zu Suche.", throttle_duration_sec=5.0)
-                	self.change_state(DockingState.SEARCHING_FOR_DOCK_TAG) # Zurück zu State 6
+            
+            except TransformException as e:
+                # GEÄNDERT: Starte das Relocate-Manöver, wenn wir nicht schon dabei sind
+                if not (hasattr(self, '_align_relocating') and self._align_relocating):
+                    self.get_logger().warn(f"Tag '{self.DOCKING_TARGET_FRAME}' während Ausrichtung verloren! Starte 10cm Vorfahrt.")
+                    self._align_relocating = True
+                    self._align_relocate_start_time = self.get_clock().now()
+            
             return
             
         # --- 8. In die Hütte fahren (Visual Servoing) ---
