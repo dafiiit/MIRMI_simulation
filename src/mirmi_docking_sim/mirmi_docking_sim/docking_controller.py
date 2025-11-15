@@ -19,9 +19,9 @@ class DockingState(Enum):
     SEARCHING = 1          # 1. Dreht sich, bis Tag gesehen wird
     LOCALIZING = 2         # 2. Bestimmt Welt-Position
     GOTO_RADIUS_POINT = 3  # 3. Fährt ZU einem Punkt auf dem 10m-Radius
-    ALIGN_TANGENT = 4      # 4. Dreht sich 90° zur Hütte (tangential)
-    FOLLOW_ARC = 5         # 5. Fährt auf dem 10m-Radius bis zur Öffnung
-    ALIGN_TO_HUT = 6       # 6. Dreht sich zur Öffnung
+    FOLLOW_ARC = 4         # 5. Fährt auf dem 10m-Radius bis zur Öffnung
+    ALIGN_TO_HUT = 5       # 6. Dreht sich zur Öffnung
+    FINAL_ALIGNMENT = 6    # 7. Steht still, dreht sich exakt auf Tag 1
     DOCKING = 7            # 7. Fährt in die Hütte
     FINAL_STOP = 8         # 8. Ziel erreicht
 
@@ -36,14 +36,20 @@ class DockingController(Node):
         
         # Konstanten für die Navigation
         self.HUT_CENTER = np.array([5.0, 2.0])
-        self.TARGET_RADIUS = 10.0      # Dein Wunsch: 10 Meter
-        self.RADIUS_TOLERANCE = 0.1    # Dein Wunsch: +-10cm
-        self.ARC_SPEED = 0.4           # Geschwindigkeit beim Fahren des Bogens (m/s)
-        self.K_P_RADIUS = 0.7          # Verstärkung für Radius-Korrektur
+        self.TARGET_RADIUS = 5.5      # Dein Wunsch: 10 Meter
+        self.RADIUS_TOLERANCE = 0.15    # Dein Wunsch: +-10cm
+        self.ARC_SPEED = 0.4           # Geschwindigkeit beim Fahren des Bogens (m/s) (wird nicht mehr genutzt)
+        self.K_P_RADIUS = 0.7          # Verstärkung für Radius-Korrektur (wird nicht mehr genutzt)
         
         # Wegpunkte (relativ zur Welt)
         self.WAYPOINT_OPENING = np.array([6.5, 2.0])  # Vor der Öffnung (für Ausrichtung)
         self.WAYPOINT_INSIDE = np.array([5.5, 2.0])   # In der Hütte (Endziel)
+        
+        # Ziel-Tag für die Endausrichtung
+        self.DOCKING_TARGET_FRAME = 'tag36_11_00001' # Das Tag INNEN an der Rückwand
+        self.DOCKING_TARGET_DISTANCE = 1.9 # Ziel-Abstand zum Tag (Robot-Origin bei 5.5, Tag bei 3.6 -> 1.9m)
+        self.DOCKING_SPEED_LINEAR = 0.3    # Langsame, präzise Fahrt
+        self.DOCKING_SPEED_ANGULAR = 1.5   # Maximale Dreh-Korrektur
         
         # Aktuelle Roboter-Pose (x, y, theta) aus Odometrie
         self.current_odom_pose = None
@@ -57,6 +63,7 @@ class DockingController(Node):
         # Variablen für die Kreis-Logik
         self.arc_direction = 1.0  # 1.0 für CCW (gegen UZS), -1.0 für CW (im UZS)
         self.tangent_goal_angle = 0.0
+        self.current_arc_goal = None
         
         # TF
         self.tf_buffer = tf2_ros.Buffer()
@@ -161,8 +168,6 @@ class DockingController(Node):
             current_pos = np.array(self.current_odom_pose[:2])
             dist = np.linalg.norm(self.HUT_CENTER - current_pos)
             status_lines.append(f"Aktion: Fahre auf {self.TARGET_RADIUS}m Radius (aktuell: {dist:.2f}m)")
-        elif self.state == DockingState.ALIGN_TANGENT:
-            status_lines.append(f"Aktion: Richte tangential aus (Ziel: {math.degrees(self.tangent_goal_angle):.1f}°, Dir: {'CCW' if self.arc_direction > 0 else 'CW'})")
         elif self.state == DockingState.FOLLOW_ARC and self.current_odom_pose:
             current_pos = np.array(self.current_odom_pose[:2])
             dist = np.linalg.norm(self.HUT_CENTER - current_pos)
@@ -274,72 +279,51 @@ class DockingController(Node):
                 # Berechne Zielpunkt auf 10m Radius
                 target_point = self.HUT_CENTER - (vec_to_center / dist_to_center) * self.TARGET_RADIUS
                 
-                # Fahre zu diesem Punkt
                 if self.simple_go_to(target_point, tolerance=self.RADIUS_TOLERANCE):
-                    self.get_logger().info(f"✓ Schritt 4: {self.TARGET_RADIUS}m Radius erreicht.")
-                    self.change_state(DockingState.ALIGN_TANGENT)
+                    self.get_logger().info(f"✓ {self.TARGET_RADIUS}m Radius erreicht. Berechne kürzeste Kreisbahn...")
+                    
+                    # 1. Winkel des Ziels (Öffnung)
+                    opening_angle = math.atan2(
+                        self.WAYPOINT_OPENING[1] - self.HUT_CENTER[1],
+                        self.WAYPOINT_OPENING[0] - self.HUT_CENTER[0]
+                    )
+                    # 2. Aktueller Winkel des Roboters
+                    current_angle_on_circle = math.atan2(
+                        current_pos_vec[1] - self.HUT_CENTER[1],
+                        current_pos_vec[0] - self.HUT_CENTER[0]
+                    )
+                    # 3. Differenzwinkel (kürzester Weg)
+                    angle_diff_to_opening = opening_angle - current_angle_on_circle
+                    angle_diff_to_opening = (angle_diff_to_opening + math.pi) % (2 * math.pi) - math.pi
+                    
+                    # 4. Drehrichtung setzen
+                    if angle_diff_to_opening > 0:
+                        self.arc_direction = 1.0  # CCW
+                    else:
+                        self.arc_direction = -1.0 # CW
+                    
+                    self.get_logger().info(f"✓ Kürzeste Richtung: {'CCW' if self.arc_direction > 0 else 'CW'}. Starte Kreisbahn (Schritt 4).")
+                    
+                    # 5. DIREKT ZU STATE 4 (FOLLOW_ARC) SPRINGEN
+                    self.change_state(DockingState.FOLLOW_ARC)
             else:
                 self.get_logger().warn("Roboter ist ZU NAH am Zentrum, fahre zurück.")
                 target_point = current_pos_vec - vec_to_center * (self.TARGET_RADIUS + 1.0)
                 self.simple_go_to(target_point, tolerance=self.RADIUS_TOLERANCE)
             return
-        
-        # --- 4. Tangential ausrichten (kürzere Richtung wählen) ---
-        if self.state == DockingState.ALIGN_TANGENT:
             
-            # 1. Winkel vom Roboter zum Hüttenzentrum
-            vec_to_center = self.HUT_CENTER - current_pos_vec
-            angle_to_center = math.atan2(vec_to_center[1], vec_to_center[0])
-            
-            # 2. Winkel des Ziels (Öffnung) relativ zum Hüttenzentrum
-            opening_angle = math.atan2(
-                self.WAYPOINT_OPENING[1] - self.HUT_CENTER[1],
-                self.WAYPOINT_OPENING[0] - self.HUT_CENTER[0]
-            ) # Dies ist 0.0 für [6.5, 2.0] und [5.0, 2.0]
-            
-            # 3. Aktueller Winkel des Roboters auf dem Kreis
-            current_angle_on_circle = math.atan2(
-                current_pos_vec[1] - self.HUT_CENTER[1],
-                current_pos_vec[0] - self.HUT_CENTER[0]
-            )
-            
-            # 4. Differenzwinkel zum Ziel (kürzester Weg)
-            angle_diff_to_opening = opening_angle - current_angle_on_circle
-            angle_diff_to_opening = (angle_diff_to_opening + math.pi) % (2 * math.pi) - math.pi
-            
-            # 5. Drehrichtung und Zielwinkel bestimmen
-            if angle_diff_to_opening > 0:
-                self.arc_direction = 1.0  # CCW (gegen UZS)
-                self.tangent_goal_angle = angle_to_center + math.pi/2 # 90° links
-            else:
-                self.arc_direction = -1.0 # CW (im UZS)
-                self.tangent_goal_angle = angle_to_center - math.pi/2 # 90° rechts
-            
-            self.tangent_goal_angle = (self.tangent_goal_angle + math.pi) % (2 * math.pi) - math.pi
-
-            # 6. P-Regler zum Ausrichten
-            angle_err = self.tangent_goal_angle - current_theta
-            angle_err = (angle_err + math.pi) % (2 * math.pi) - math.pi
-            
-            if abs(angle_err) < 0.05:  # ~3 Grad Toleranz
-                self.get_logger().info(f"✓ Schritt 5: Tangential ausgerichtet (Richtung: {'CCW' if self.arc_direction > 0 else 'CW'}).")
-                self.change_state(DockingState.FOLLOW_ARC)
-                self.publish_twist(0.0, 0.0)
-            else:
-                angular_vel = np.clip(1.5 * angle_err, -0.5, 0.5)
-                self.publish_twist(0.0, angular_vel)
-            return
-            
-        # --- 5. Kreis fahren ---
+        # --- 5. Kreis fahren (als Polygon-Annäherung) ---
         if self.state == DockingState.FOLLOW_ARC:
             
-            # --- Stopp-Bedingung: Sind wir an der Öffnung? ---
-            # Aktueller Winkel des Roboters auf dem Kreis
+            POLYGON_SEGMENT_LENGTH = 0.5  # 50cm pro Segment
+            GOAL_REACHED_TOLERANCE = 0.15 # 15cm Toleranz pro Segment
+            
+            # --- 1. Stopp-Bedingung: Sind wir an der Öffnung? ---
+            # (Diese Logik bleibt gleich)
             current_angle_on_circle = math.atan2(
                 current_pos_vec[1] - self.HUT_CENTER[1],
                 current_pos_vec[0] - self.HUT_CENTER[0]
             )
-            # Zielwinkel (Öffnung)
             opening_angle = math.atan2(
                 self.WAYPOINT_OPENING[1] - self.HUT_CENTER[1],
                 self.WAYPOINT_OPENING[0] - self.HUT_CENTER[0]
@@ -348,33 +332,47 @@ class DockingController(Node):
             angle_err_to_goal = opening_angle - current_angle_on_circle
             angle_err_to_goal = (angle_err_to_goal + math.pi) % (2 * math.pi) - math.pi
             
-            # Prüfen, ob wir "fast" da sind (z.B. < 6 Grad)
-            if abs(angle_err_to_goal) < 0.1:
+            # Stoppen, wenn wir sehr nah am Zielwinkel sind
+            if abs(angle_err_to_goal) < 0.01: # muss relativ akkurat sein
                 self.get_logger().info("✓ Schritt 6: Kreisbahn beendet (nahe Öffnung).")
                 self.change_state(DockingState.ALIGN_TO_HUT)
                 self.publish_twist(0.0, 0.0)
+                self.current_arc_goal = None # Ziel zurücksetzen
                 return
 
-            # --- Kreis-Regler ---
-            # 1. Basis-Rotation für den Kreis (v = w * r -> w = v / r)
-            base_angular_vel = (self.arc_direction * self.ARC_SPEED) / self.TARGET_RADIUS
+            # --- 2. Ziel-Management: Haben wir ein Ziel oder brauchen wir ein neues? ---
             
-            # 2. Radius-Korrektur (P-Regler)
-            current_dist = np.linalg.norm(current_pos_vec - self.HUT_CENTER)
-            radius_error = self.TARGET_RADIUS - current_dist # Positiv, wenn zu nah
-            
-            # Korrektur: Wir wollen *WEG* vom Zentrum, wenn zu nah (radius_error > 0)
-            # Drehung im UZS (negativ) lenkt nach rechts (weg vom Zentrum, wenn wir CCW fahren)
-            # Drehung gegen UZS (positiv) lenkt nach links (weg vom Zentrum, wenn wir CW fahren)
-            angular_correction = -self.arc_direction * self.K_P_RADIUS * radius_error
-            
-            # 3. Gesamt-Rotation
-            total_angular_vel = base_angular_vel + angular_correction
-            total_angular_vel = np.clip(total_angular_vel, -0.7, 0.7) # Begrenzen
-            
-            self.publish_twist(self.ARC_SPEED, total_angular_vel)
-            return
+            if self.current_arc_goal is None:
+                # Wir haben kein Ziel (oder haben das letzte erreicht)
+                # Berechne das NÄCHSTE Polygon-Vertex
+                
+                # Der Winkel eines Segments (s = r * theta -> theta = s / r)
+                segment_angle_rad = POLYGON_SEGMENT_LENGTH / self.TARGET_RADIUS
+                
+                # Wende den Winkel in die korrekte Richtung an
+                next_goal_angle = current_angle_on_circle + (self.arc_direction * segment_angle_rad)
+                
+                # Konvertiere den Winkel zurück in eine (x, y) Koordinate
+                goal_x = self.HUT_CENTER[0] + self.TARGET_RADIUS * math.cos(next_goal_angle)
+                goal_y = self.HUT_CENTER[1] + self.TARGET_RADIUS * math.sin(next_goal_angle)
+                
+                self.current_arc_goal = np.array([goal_x, goal_y])
+                self.get_logger().info(f"Neues Polygon-Ziel: ({goal_x:.2f}, {goal_y:.2f})")
 
+            # --- 3. Fahre zum aktuellen Ziel-Vertex ---
+            
+            # Nutze die simple_go_to Funktion, um zum Vertex zu fahren
+            if self.simple_go_to(self.current_arc_goal, tolerance=GOAL_REACHED_TOLERANCE):
+                # Wir haben das Vertex erreicht!
+                self.get_logger().info("Polygon-Vertex erreicht.")
+                # Setze das Ziel auf None, damit in der nächsten Iteration
+                # das NÄCHSTE Ziel berechnet wird.
+                self.current_arc_goal = None
+                # simple_go_to hat bereits einen Stopp-Befehl (0,0) gesendet
+            
+            # Die simple_go_to() Funktion kümmert sich um das Senden der Twist-Befehle
+            return
+            
         # --- 6. Zur Hütte ausrichten ---
         if self.state == DockingState.ALIGN_TO_HUT:
             # Ziel ist der Eingang (oder leicht dahinter)
@@ -394,16 +392,87 @@ class DockingController(Node):
                 angular_vel = np.clip(1.5 * angle_err, -0.5, 0.5)
                 self.publish_twist(0.0, angular_vel)
             return
-        
-        # --- 7. In die Hütte fahren ---
-        if self.state == DockingState.DOCKING:
-            if self.simple_go_to(self.WAYPOINT_INSIDE, tolerance=0.15):
-                self.get_logger().info("✓✓✓ SCHRITT 8: DOCKING ERFOLGREICH! ✓✓✓")
-                self.change_state(DockingState.FINAL_STOP)
+            
+        # --- 7. Endgültige Ausrichtung (Nur Drehen) ---
+        if self.state == DockingState.FINAL_ALIGNMENT:
+            try:
+                t = self.tf_buffer.lookup_transform(
+                    'robot/chassis',
+                    self.DOCKING_TARGET_FRAME,
+                    rclpy.time.Time()
+                )
+                trans = t.transform.translation
+                
+                # Nur Winkelfehler berechnen
+                angle_err = math.atan2(trans.y, trans.x)
+
+                # Toleranz für "gerade": z.B. 1.5 Grad
+                # (Du kannst 0.025 rad verkleinern, wenn es noch präziser sein muss)
+                if abs(angle_err) < 0.001: # ~1.4 Grad
+                    self.get_logger().info("✓ End-Ausrichtung abgeschlossen. Starte Einfahrt.")
+                    self.publish_twist(0.0, 0.0)
+                    self.change_state(DockingState.DOCKING) # Jetzt zu State 8 (DOCKING)
+                else:
+                    # P-Regler nur für Drehung
+                    angular_vel = np.clip(2.5 * angle_err, -self.DOCKING_SPEED_ANGULAR, self.DOCKING_SPEED_ANGULAR)
+                    self.get_logger().info(f"Richte aus... Winkelfehler: {math.degrees(angle_err):.2f}°", throttle_skip_count=5)
+                    self.publish_twist(0.0, angular_vel) # WICHTIG: linear_vel = 0.0
+            
+            except TransformException as e:
+                self.get_logger().error(f"Tag '{self.DOCKING_TARGET_FRAME}' während Ausrichtung verloren! Gehe zurück zu Suche.")
+                self.change_state(DockingState.SEARCHING_FOR_DOCK_TAG) # Zurück zu State 6
+            
             return
-        
-        # --- 8. Ziel erreicht ---
-        if self.state == DockingState.FINAL_STOP:
+            
+        # --- 8. In die Hütte fahren (Visual Servoing) ---
+        if self.state == DockingState.DOCKING: # ALT: 7
+            try:
+                # ... (lookup_transform bleibt gleich)
+                t = self.tf_buffer.lookup_transform(
+                    'robot/chassis',
+                    self.DOCKING_TARGET_FRAME,
+                    rclpy.time.Time()
+                )
+                
+                trans = t.transform.translation
+                
+                # 1. Distanzfehler (vor/zurück)
+                dist_err = trans.x - self.DOCKING_TARGET_DISTANCE
+                
+                # 2. Winkelfehler (links/rechts)
+                angle_err = math.atan2(trans.y, trans.x)
+                
+                # --- Regler ---
+                
+                # Stopp-Bedingung: Zielabstand erreicht
+                if abs(dist_err) < 0.1:
+                    self.get_logger().info("✓✓✓ SCHRITT 9: DOCKING ERFOLGREICH! ✓✓✓")
+                    self.change_state(DockingState.FINAL_STOP) # Zu State 9
+                    self.publish_twist(0.0, 0.0)
+                    return
+
+                # P-Regler für lineare Geschwindigkeit
+                linear_vel = np.clip(0.8 * dist_err, -self.DOCKING_SPEED_LINEAR, self.DOCKING_SPEED_LINEAR)
+                
+                # P-Regler für Winkelgeschwindigkeit (für Feinkorrektur)
+                angular_vel = np.clip(1.5 * angle_err, -self.DOCKING_SPEED_ANGULAR, self.DOCKING_SPEED_ANGULAR)
+
+                # Diese Sperre (falls noch vorhanden) ist jetzt weniger kritisch,
+                # da der Winkelfehler durch State 7 schon klein sein sollte.
+                if abs(angle_err) > 0.3: # ~17 Grad
+                    linear_vel = 0.0 # Stoppe Vorwärtsbewegung, wenn Ausrichtung stark abweicht
+                    
+                self.publish_twist(linear_vel, angular_vel)
+
+            except TransformException as e:
+                self.get_logger().error(f"Tag '{self.DOCKING_TARGET_FRAME}' während des Dockings verloren! Stoppe.")
+                self.publish_twist(0.0, 0.0)
+                # Optional: Hier könnte man einen Fehler-Zustand einleiten
+            
+            return
+            
+        # --- 9. Ziel erreicht ---
+        if self.state == DockingState.FINAL_STOP: # ALT: 8
             self.publish_twist(0.0, 0.0)
             self.control_timer.cancel()
             self.debug_timer.cancel()
@@ -418,9 +487,9 @@ class DockingController(Node):
             return False
 
         # Parameter
-        K_linear = 0.5
+        K_linear = 1.0    # ALT: 0.5 oder 0.7 (Schnellere Beschleunigung)
         K_angular = 2.0
-        max_linear = 0.5
+        max_linear = 1.5  # ALT: 0.5 oder 0.8 (Höhere Endgeschwindigkeit)
         max_angular = 1.0
 
         current_pos = np.array(self.current_odom_pose[:2])
