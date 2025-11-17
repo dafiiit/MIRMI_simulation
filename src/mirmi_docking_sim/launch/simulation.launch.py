@@ -1,7 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, SetEnvironmentVariable
+from launch.actions import IncludeLaunchDescription, SetEnvironmentVariable, DeclareLaunchArgument 
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -14,6 +14,12 @@ def generate_launch_description():
     models_path = os.path.join(pkg_mirmi_docking_sim, 'models')
     world_path = os.path.join(pkg_mirmi_docking_sim, 'worlds', 'docking_world.sdf')
     bridge_config_path = os.path.join(pkg_mirmi_docking_sim, 'config', 'bridge.yaml')
+    
+    use_gt_arg = DeclareLaunchArgument(
+        'use_ground_truth',
+        default_value='False',
+        description='Use Ground Truth pose instead of Odometry (for testing)'
+    )
 
     # 1. Umgebungsvariable für Modelle setzen
     existing_gz_path = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
@@ -170,12 +176,15 @@ def generate_launch_description():
         output='screen'
     )
     
-    # 8. NEUER DOCKING CONTROLLER
+    # 8. DOCKING CONTROLLER
     docking_controller_node = Node(
         package='mirmi_docking_sim',
         executable='docking_controller',
         name='docking_controller',
-        output='screen'
+        output='screen',
+        parameters=[{
+            'use_ground_truth': LaunchConfiguration('use_ground_truth')
+        }]
     )
     
     odom_tf_node = Node(
@@ -203,6 +212,7 @@ def generate_launch_description():
         )
 
     return LaunchDescription([
+    	use_gt_arg,
         set_env,
         gz_sim,
         gz_bridge,

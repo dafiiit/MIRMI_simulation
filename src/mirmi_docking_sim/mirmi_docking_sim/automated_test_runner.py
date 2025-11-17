@@ -150,32 +150,23 @@ class DockingTestRunner(Node):
             self.current_attempt += 1
             self.reset_target_pose = self.get_random_start_pose()
             self.get_logger().info(f"Starte Versuch {self.current_attempt}... Teleportiere Roboter.")
-            self.teleport_deadline = time.time() + 5.0 # 5s Zeit für Teleport
             
-            # Einmalig feuern reicht beim Service Call oft, aber zur Sicherheit 
-            # machen wir es im nächsten Schritt nochmal, falls Odometrie nicht springt.
+            # Wir setzen einen Zeitpunkt, wann es "losgehen" soll (z.B. in 1 Sekunde)
+            # Anstatt auf Odom zu warten, vertrauen wir dem Service-Call.
+            self.wait_until_time = time.time() + 1.0 
+            
             self.perform_teleport()
-            
             self.runner_state = "RESETTING"
 
-        # 2. RESETTING: Warten bis Roboter an neuer Position ist
+        # 2. RESETTING: Einfaches Warten (Blind Trust)
         elif self.runner_state == "RESETTING":
             
-            # Prüfen: Ist Roboter am Ziel?
-            curr_x = self.current_pose.position.x
-            curr_y = self.current_pose.position.y
-            target_x, target_y, _ = self.reset_target_pose
-            
-            dist = math.sqrt((curr_x - target_x)**2 + (curr_y - target_y)**2)
-            
-            if dist < 1.0: # Toleranz erhöht, da Roboter etwas rutschen kann
-                self.get_logger().info(f"Teleport bestätigt (Dist: {dist:.2f}m). Test läuft!")
+            # Wir ignorieren die Odometrie-Prüfung, da Gazebo DiffDrive
+            # beim Teleportieren die Odom-Werte oft nicht aktualisiert.
+            if time.time() > self.wait_until_time:
+                self.get_logger().info(f"Wartezeit vorbei. Test {self.current_attempt} läuft!")
                 self.start_time = time.time()
                 self.runner_state = "RUNNING"
-            elif time.time() > self.teleport_deadline:
-                self.get_logger().warn("Teleport Timeout! Sende Befehl erneut...")
-                self.perform_teleport() # Retry
-                self.teleport_deadline = time.time() + 2.0 # Kurzes neues Timeout
 
         # 3. RUNNING: Der eigentliche Test
         elif self.runner_state == "RUNNING":
@@ -197,14 +188,14 @@ class DockingTestRunner(Node):
 
             # C. Erfolg
             if self.current_controller_state == "FINAL_STOP":
-                # Prüfen ob wirklich in der Hütte
+                # Prüfen ob wirklich in der Hütte (basierend auf aktueller Odom)
                 dist_to_hut = np.linalg.norm([cx - self.HUT_POSITION[0], cy - self.HUT_POSITION[1]])
                 if dist_to_hut < 1.5:
                     self.log_result("SUCCESS", "DOCKED")
                 else:
                     self.log_result("FAILURE", "FALSE_POSITIVE_STOP")
                 self.runner_state = "INIT"
-
+                
 def main(args=None):
     rclpy.init(args=args)
     runner = DockingTestRunner()

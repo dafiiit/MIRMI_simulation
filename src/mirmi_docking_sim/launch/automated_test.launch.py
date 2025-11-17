@@ -8,14 +8,15 @@ from launch_ros.actions import Node
 def generate_launch_description():
     pkg_mirmi_docking_sim = get_package_share_directory('mirmi_docking_sim')
 
-    # 1. Die normale Simulation inkl. Controller laden
+    # 1. Simulation mit Ground Truth Flag starten
     simulation_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_mirmi_docking_sim, 'launch', 'simulation.launch.py')
-        )
+        ),
+        launch_arguments={'use_ground_truth': 'True'}.items()
     )
 
-    # 2. Den Test-Runner zusätzlich starten
+    # 2. Test-Runner
     test_runner_node = Node(
         package='mirmi_docking_sim',
         executable='automated_test_runner',

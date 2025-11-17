@@ -5,7 +5,7 @@ from rclpy.node import Node
 from enum import Enum
 import math
 import numpy as np
-from geometry_msgs.msg import Twist, PoseStamped
+from geometry_msgs.msg import Twist, PoseStamped, PoseArray
 from apriltag_msgs.msg import AprilTagDetectionArray
 from nav_msgs.msg import Odometry
 import tf2_ros
@@ -29,6 +29,13 @@ class DockingState(Enum):
 class DockingController(Node):
     def __init__(self):
         super().__init__('docking_controller')
+        
+        # PARAMETER: Ground Truth für Tests nutzen?
+        self.declare_parameter('use_ground_truth', False)
+        self.use_ground_truth = self.get_parameter('use_ground_truth').value
+        
+        if self.use_ground_truth:
+            self.get_logger().warn("!!! ACHTUNG: Nutze GROUND TRUTH (Simulation) statt Odometrie !!!")
         
         # Zustand der State Machine
         self.state = DockingState.SEARCHING
@@ -65,7 +72,7 @@ class DockingController(Node):
         # Flag ob wir bereits lokalisiert haben
         self.has_localized = False
         
-        # KORREKTUR: Speichert die letzte Detektion von Tag 1
+        # Speichert die letzte Detektion von Tag 1
         self.last_target_detection = None
         self.last_detection_time = self.get_clock().now()
         
@@ -92,6 +99,7 @@ class DockingController(Node):
         )
         
         # Publisher & Subscriber
+        
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         
         self.state_pub = self.create_publisher(
@@ -107,12 +115,22 @@ class DockingController(Node):
             10
         )
         
-        self.odom_sub = self.create_subscription(
-            Odometry,
-            '/odom',
-            self.odom_callback,
-            qos_profile
-        )
+        if self.use_ground_truth:
+            self.get_logger().warn("TEST-MODUS: Abonniere /model/robot/pose (Ground Truth)")
+            self.gt_sub = self.create_subscription(
+                PoseArray,
+                '/model/robot/pose',
+                self.ground_truth_callback,
+                qos_profile 
+            )
+        else:
+            self.odom_sub = self.create_subscription(
+                Odometry,
+                '/odom',
+                self.odom_callback,
+                qos_profile
+            )
+       
         
         # Haupt-Kontrollschleife
         self.control_timer = self.create_timer(0.1, self.control_loop)
@@ -203,6 +221,26 @@ class DockingController(Node):
         for line in status_lines:
             self.get_logger().info(line)
 
+    def ground_truth_callback(self, msg: PoseArray):
+        """Liest die perfekte Pose aus der Simulation (für Tests)"""
+        if len(msg.poses) == 0:
+            return
+            
+        # Index 0 ist in der Regel das Modell selbst (Base Link)
+        # Die Gazebo-Bridge sendet hier alle Posen des Modells
+        robot_pose = msg.poses[0]
+        
+        pos = robot_pose.position
+        orient = robot_pose.orientation
+        _, _, yaw = euler_from_quaternion([orient.x, orient.y, orient.z, orient.w])
+        
+        # Wir "faken" die Odometrie-Variable mit der perfekten Pose
+        was_none = self.current_odom_pose is None
+        self.current_odom_pose = (pos.x, pos.y, yaw)
+        
+        if was_none:
+            self.get_logger().info(f"✓ Ground Truth empfangen: ({pos.x:.2f}, {pos.y:.2f})")
+    
     def odom_callback(self, msg: Odometry):
         """Speichert die aktuelle Odometrie-Pose"""
         pos = msg.pose.pose.position
