@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Pose, Twist
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 import numpy as np
@@ -11,6 +11,7 @@ import csv
 import math
 import random
 import os
+import subprocess  # <--- WICHTIG: Für den direkten Gazebo-Befehl
 from datetime import datetime
 from tf_transformations import quaternion_from_euler
 
@@ -18,80 +19,64 @@ class DockingTestRunner(Node):
     def __init__(self):
         super().__init__('docking_test_runner')
 
-        # --- KONFIGURATION ---
-        self.TEST_ATTEMPTS = 50       # Anzahl der Versuche pro Runner
-        self.TIMEOUT_SEC = 600        # 10 Minuten
+        self.declare_parameter('test_attempts', 50)
+        self.TEST_ATTEMPTS = self.get_parameter('test_attempts').value
+        self.TIMEOUT_SEC = 120.0  
         self.HUT_POSITION = np.array([5.0, 2.0])
-        # Kollisionsbox der Hütte (etwas größer als das visuelle Modell)
-        self.HUT_COLLISION_BOX = {
-            'x_min': 3.4, 'x_max': 6.6, # 3m lang + Puffer
-            'y_min': 0.8, 'y_max': 3.2  # 2.2m breit + Puffer
-        }
         
-        # --- LOGGING SETUP ---
+        # Kollisionsbox
+        self.HUT_COLLISION_BOX = {
+            'x_min': 3.4, 'x_max': 6.6, 
+            'y_min': 0.8, 'y_max': 3.2 
+        }
+
+        # CSV Setup (Absoluter Pfad)
+        home_dir = os.path.expanduser("~")
+        self.results_dir = os.path.join(home_dir, "ros2_ws/src/ROS2_BA_MIRMI/test_results")
+        os.makedirs(self.results_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self.csv_filename = f"docking_results_{timestamp}.csv"
+        self.csv_filename = os.path.join(self.results_dir, f"docking_results_{timestamp}.csv")
         self.setup_csv()
 
-        # --- ROS SCHNITTSTELLEN ---
-        # Zum Teleportieren
-        self.pose_pub = self.create_publisher(Pose, '/model/robot/set_pose', 1)
-        # Zum Stoppen des Roboters beim Reset
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 1)
-        
-        # Überwachung
+        # Publisher/Subscriber
+        # Pose Publisher entfernt, da wir jetzt subprocess nutzen!
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.create_subscription(String, '/docking_controller/state', self.state_callback, 10)
 
         self.current_pose = None
         self.current_controller_state = "UNKNOWN"
         
-        # Test Status
-        self.test_active = False
-        self.start_time = 0
+        # State Machine Variablen
         self.current_attempt = 0
-        self.results = []
-
-        self.get_logger().info(f"Test Runner bereit. Ergebnisse in: {self.csv_filename}")
+        self.start_time = 0
+        self.reset_target_pose = None
         
-        # Starte den Loop
-        self.timer = self.create_timer(1.0, self.test_loop)
+        # INIT -> RESETTING -> RUNNING -> FINISHED
+        self.runner_state = "INIT" 
+        self.teleport_deadline = 0
+
+        self.get_logger().info(f"Test Runner gestartet. Ergebnisse in: {self.csv_filename}")
+        
+        # Schneller Timer für die Logik
+        self.timer = self.create_timer(0.1, self.test_loop)
 
     def setup_csv(self):
         with open(self.csv_filename, mode='w', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow([
-                "Versuch_ID", 
-                "Ergebnis",           # SUCCESS, COLLISION, TIMEOUT
-                "Dauer_Sekunden", 
-                "Start_X", "Start_Y", "Start_Theta_Deg", "Start_Distanz",
-                "End_X", "End_Y", 
-                "Letzter_State", 
-                "Fehlergrund"
-            ])
+            writer.writerow(["Versuch_ID", "Ergebnis", "Dauer", "Start_Distanz", "Fehlergrund"])
 
     def log_result(self, result, reason):
         duration = time.time() - self.start_time
-        
-        start_x, start_y, start_theta = self.start_pose_data
-        start_dist = np.linalg.norm(np.array([start_x, start_y]) - self.HUT_POSITION)
-        
-        end_x = self.current_pose.position.x if self.current_pose else 0.0
-        end_y = self.current_pose.position.y if self.current_pose else 0.0
+        start_dist = 0.0
+        if self.reset_target_pose:
+             start_dist = np.linalg.norm(np.array(self.reset_target_pose[:2]) - self.HUT_POSITION)
 
         with open(self.csv_filename, mode='a', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow([
-                self.current_attempt,
-                result,
-                f"{duration:.2f}",
-                f"{start_x:.2f}", f"{start_y:.2f}", f"{math.degrees(start_theta):.2f}", f"{start_dist:.2f}",
-                f"{end_x:.2f}", f"{end_y:.2f}",
-                self.current_controller_state,
-                reason
-            ])
+            writer.writerow([self.current_attempt, result, f"{duration:.2f}", f"{start_dist:.2f}", reason])
         
-        self.get_logger().info(f"VERSUCH {self.current_attempt}: {result} ({reason}) nach {duration:.2f}s")
+        self.get_logger().info(f"Ergebnis Versuch {self.current_attempt}: {result} ({reason})")
 
     def odom_callback(self, msg):
         self.current_pose = msg.pose.pose
@@ -100,116 +85,132 @@ class DockingTestRunner(Node):
         self.current_controller_state = msg.data
 
     def get_random_start_pose(self):
-        """Generiert eine Position zwischen 6m (außerhalb Sichtweite Hütte) und 10m"""
-        min_dist = 6.0 
-        max_dist = 10.0
-        
-        dist = random.uniform(min_dist, max_dist)
+        # Zufallsposition 6m bis 10m entfernt
+        dist = random.uniform(6.0, 10.0)
         angle = random.uniform(0, 2 * math.pi)
-        
         x = self.HUT_POSITION[0] + dist * math.cos(angle)
         y = self.HUT_POSITION[1] + dist * math.sin(angle)
-        
-        # Zufällige Rotation des Roboters (0 bis 360 Grad)
-        theta = random.uniform(0, 2 * math.pi)
-        
+        theta = random.uniform(0, 2 * math.pi) # Zufällige Ausrichtung
         return x, y, theta
 
-    def check_collision(self):
-        if not self.current_pose: return False
-        x = self.current_pose.position.x
-        y = self.current_pose.position.y
+    def perform_teleport(self):
+        """Sicherer Teleport mit korrekten Flags (--req statt -p)"""
+        if not self.reset_target_pose: return
         
-        # Simple Box-Check
-        if (self.HUT_COLLISION_BOX['x_min'] < x < self.HUT_COLLISION_BOX['x_max'] and
-            self.HUT_COLLISION_BOX['y_min'] < y < self.HUT_COLLISION_BOX['y_max']):
-            return True
-        return False
-
-    def reset_robot(self):
-        """Setzt den Roboter an eine neue Position"""
-        x, y, theta = self.get_random_start_pose()
-        self.start_pose_data = (x, y, theta)
-        
-        # 1. Motor stoppen
-        stop_msg = Twist()
-        self.cmd_vel_pub.publish(stop_msg)
-        
-        # 2. Teleportieren
-        pose_msg = Pose()
-        pose_msg.position.x = x
-        pose_msg.position.y = y
-        pose_msg.position.z = 0.1 # Leicht über Boden
-        
+        x, y, theta = self.reset_target_pose
         q = quaternion_from_euler(0, 0, theta)
-        pose_msg.orientation.x = q[0]
-        pose_msg.orientation.y = q[1]
-        pose_msg.orientation.z = q[2]
-        pose_msg.orientation.w = q[3]
         
-        # Mehrfach senden um sicherzugehen (Gazebo Bridge UDP kann Pakete droppen)
-        for _ in range(5):
-            self.pose_pub.publish(pose_msg)
-            time.sleep(0.05)
+        self.cmd_vel_pub.publish(Twist()) # Stop
+        
+        # Umgebungsvariablen (Fallback)
+        env = os.environ.copy()
+        if 'GZ_PARTITION' not in env: env['GZ_PARTITION'] = 'test_sim'
+        if 'GZ_TRANSPORT_IP' not in env: env['GZ_TRANSPORT_IP'] = '192.168.64.7'
+
+        # Protobuf String
+        pose_str = f'name: "robot", position: {{x: {x:.2f}, y: {y:.2f}, z: 0.2}}, orientation: {{x: {q[0]:.4f}, y: {q[1]:.4f}, z: {q[2]:.4f}, w: {q[3]:.4f}}}'
+        
+        # WICHTIG: Neue Syntax für Gazebo Harmonic (--reqtype, --req)
+        # Wir nutzen eine Liste für subprocess, das ist sicherer als shell=True bei Strings mit Quotes
+        cmd = [
+            'gz', 'service',
+            '-s', '/world/docking_world/set_pose',
+            '--reqtype', 'gz.msgs.Pose',
+            '--reptype', 'gz.msgs.Boolean',
+            '--timeout', '3000',
+            '--req', pose_str
+        ]
+        
+        try:
+            self.get_logger().info(f"Teleportiere zu x={x:.1f}, y={y:.1f}...")
+            # check=True wirft Fehler bei Exit-Code != 0
+            subprocess.run(cmd, check=True, env=env, timeout=4.0, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-        self.get_logger().info(f"Reset auf: x={x:.1f}, y={y:.1f}, theta={math.degrees(theta):.1f}°")
-        time.sleep(2.0) # Warte kurz, bis Simulation sich beruhigt
+        except subprocess.CalledProcessError as e:
+            # Code 109 ist Timeout (Passiert oft, einfach ignorieren und nochmal versuchen)
+            if e.returncode == 109:
+                self.get_logger().warn("Gazebo Timeout (109). Simulation beschäftigt? Retry im nächsten Loop...")
+            else:
+                self.get_logger().error(f"Teleport Fehler (Code {e.returncode}). Befehl war falsch.")
+        except Exception as e:
+            self.get_logger().error(f"Unbekannter Fehler: {e}")
 
     def test_loop(self):
-        # Wenn Limit erreicht
-        if self.current_attempt >= self.TEST_ATTEMPTS:
-            self.get_logger().info("ALLE TESTDURCHLÄUFE BEENDET.")
-            self.destroy_node()
-            return
+        if not self.current_pose: return # Warten auf Odometrie
 
-        # Starte neuen Versuch
-        if not self.test_active:
+        # --- STATE MACHINE ---
+
+        # 1. INIT: Neuen Versuch vorbereiten
+        if self.runner_state == "INIT":
+            if self.current_attempt >= self.TEST_ATTEMPTS:
+                self.get_logger().info("Alle Tests abgeschlossen.")
+                self.runner_state = "FINISHED"
+                return
+
             self.current_attempt += 1
-            self.reset_robot()
-            self.start_time = time.time()
-            self.test_active = True
-            return
-
-        # --- WÄHREND DES VERSUCHS ---
-        
-        # 1. Check Timeout
-        if (time.time() - self.start_time) > self.TIMEOUT_SEC:
-            self.log_result("FAILURE", "TIMEOUT")
-            self.test_active = False
-            return
-
-        # 2. Check Kollision
-        if self.check_collision():
-            self.log_result("FAILURE", "COLLISION_WITH_HUT")
-            self.test_active = False
-            return
-
-        # 3. Check Success (State == FINAL_STOP)
-        if self.current_controller_state == "FINAL_STOP":
-            # Validierung: Ist er wirklich in der Hütte?
-            dist_to_target = np.linalg.norm([
-                self.current_pose.position.x - self.HUT_POSITION[0],
-                self.current_pose.position.y - self.HUT_POSITION[1]
-            ])
+            self.reset_target_pose = self.get_random_start_pose()
+            self.get_logger().info(f"Starte Versuch {self.current_attempt}... Teleportiere Roboter.")
+            self.teleport_deadline = time.time() + 5.0 # 5s Zeit für Teleport
             
-            if dist_to_target < 1.0: # Toleranzradius
-                self.log_result("SUCCESS", "DOCKED")
-            else:
-                self.log_result("FAILURE", "FALSE_POSITIVE_STOP_FAR_AWAY")
+            # Einmalig feuern reicht beim Service Call oft, aber zur Sicherheit 
+            # machen wir es im nächsten Schritt nochmal, falls Odometrie nicht springt.
+            self.perform_teleport()
             
-            self.test_active = False
-            return
+            self.runner_state = "RESETTING"
+
+        # 2. RESETTING: Warten bis Roboter an neuer Position ist
+        elif self.runner_state == "RESETTING":
+            
+            # Prüfen: Ist Roboter am Ziel?
+            curr_x = self.current_pose.position.x
+            curr_y = self.current_pose.position.y
+            target_x, target_y, _ = self.reset_target_pose
+            
+            dist = math.sqrt((curr_x - target_x)**2 + (curr_y - target_y)**2)
+            
+            if dist < 1.0: # Toleranz erhöht, da Roboter etwas rutschen kann
+                self.get_logger().info(f"Teleport bestätigt (Dist: {dist:.2f}m). Test läuft!")
+                self.start_time = time.time()
+                self.runner_state = "RUNNING"
+            elif time.time() > self.teleport_deadline:
+                self.get_logger().warn("Teleport Timeout! Sende Befehl erneut...")
+                self.perform_teleport() # Retry
+                self.teleport_deadline = time.time() + 2.0 # Kurzes neues Timeout
+
+        # 3. RUNNING: Der eigentliche Test
+        elif self.runner_state == "RUNNING":
+            
+            # A. Timeout
+            if (time.time() - self.start_time) > self.TIMEOUT_SEC:
+                self.log_result("FAILURE", "TIMEOUT")
+                self.runner_state = "INIT"
+                return
+
+            # B. Kollision (Hütte)
+            cx = self.current_pose.position.x
+            cy = self.current_pose.position.y
+            if (self.HUT_COLLISION_BOX['x_min'] < cx < self.HUT_COLLISION_BOX['x_max'] and
+                self.HUT_COLLISION_BOX['y_min'] < cy < self.HUT_COLLISION_BOX['y_max']):
+                self.log_result("FAILURE", "COLLISION_WITH_HUT")
+                self.runner_state = "INIT"
+                return
+
+            # C. Erfolg
+            if self.current_controller_state == "FINAL_STOP":
+                # Prüfen ob wirklich in der Hütte
+                dist_to_hut = np.linalg.norm([cx - self.HUT_POSITION[0], cy - self.HUT_POSITION[1]])
+                if dist_to_hut < 1.5:
+                    self.log_result("SUCCESS", "DOCKED")
+                else:
+                    self.log_result("FAILURE", "FALSE_POSITIVE_STOP")
+                self.runner_state = "INIT"
 
 def main(args=None):
     rclpy.init(args=args)
     runner = DockingTestRunner()
-    try:
-        rclpy.spin(runner)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        runner.destroy_node()
-        rclpy.shutdown()
+    rclpy.spin(runner)
+    runner.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

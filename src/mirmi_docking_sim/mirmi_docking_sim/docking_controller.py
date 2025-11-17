@@ -450,9 +450,15 @@ class DockingController(Node):
         # --- 9. Ziel erreicht ---
         if self.state == DockingState.FINAL_STOP:
             self.publish_twist(0.0, 0.0)
-            self.control_timer.cancel()
-            self.debug_timer.cancel()
-            self.get_logger().info("Docking abgeschlossen. Alle Timer gestoppt.")
+            
+            if self.current_odom_pose is not None:
+                current_pos = np.array(self.current_odom_pose[:2])
+                dist_to_hut = np.linalg.norm(current_pos - self.HUT_CENTER)
+                
+                # Wenn wir plötzlich weit weg sind (> 3m), starte neu!
+                if dist_to_hut > 3.0:
+                    self.get_logger().info("Reset erkannt! Starte Docking-Sequenz neu.")
+                    self.change_state(DockingState.SEARCHING)
             return
 
     def simple_go_to(self, target_pos: np.ndarray, tolerance: float) -> bool:
