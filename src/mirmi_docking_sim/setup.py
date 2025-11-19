@@ -67,6 +67,7 @@ setup(
             'docking_controller = mirmi_docking_sim.docking_controller:main',
             'odom_to_tf = mirmi_docking_sim.odom_to_tf_publisher:main',
             'automated_test_runner = mirmi_docking_sim.automated_test_runner:main',
+            'pcl_docking_controller = mirmi_docking_sim.pcl_docking_controller:main',
         ],
     },
 )
