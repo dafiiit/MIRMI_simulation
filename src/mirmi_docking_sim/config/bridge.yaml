@@ -7,7 +7,7 @@
 
 # 2. Odometrie (Gazebo -> ROS)
 - ros_topic_name: "/odom"
-  gz_topic_name: "/model/robot/odometry"
+  gz_topic_name: "/model/robot/odom_nav"
   ros_type_name: "nav_msgs/msg/Odometry"
   gz_type_name: "gz.msgs.Odometry"
   direction: GZ_TO_ROS
@@ -42,14 +42,21 @@
   direction: GZ_TO_ROS
   
 # 6. Robot Pose
-- ros_topic_name: "/model/robot/pose"
-  gz_topic_name: "/model/robot/pose"
-  ros_type_name: "geometry_msgs/msg/PoseArray"
-  gz_type_name: "gz.msgs.Pose_V"
+#- ros_topic_name: "/model/robot/pose"
+#  gz_topic_name: "/model/robot/pose"
+#  ros_type_name: "geometry_msgs/msg/PoseArray"
+#  gz_type_name: "gz.msgs.Pose_V"
+#  direction: GZ_TO_ROS
+#  qos:
+#    reliability: best_effort
+#    durability: volatile
+
+# 6. Ground Truth Odometry (NEU)
+- ros_topic_name: "/ground_truth"
+  gz_topic_name: "/model/robot/odometry"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
   direction: GZ_TO_ROS
-  qos:
-    reliability: best_effort
-    durability: volatile
   
     # 7. Roboter Teleportation
 #- ros_topic_name: "/model/robot/set_pose"

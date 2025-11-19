@@ -44,8 +44,9 @@ class DockingController(Node):
         # Subscriber
         if self.use_ground_truth:
             self.get_logger().warn("!!! ACHTUNG: Nutze GROUND TRUTH (/model/robot/pose) !!!")
-            self.gt_sub = self.create_subscription(
-                PoseArray, '/model/robot/pose', self.ground_truth_callback, qos_profile_sensor_data)
+            #self.gt_sub = self.create_subscription(
+             #   PoseArray, '/model/robot/pose', self.ground_truth_callback, qos_profile_sensor_data)
+       	    self.gt_sub = self.create_subscription(Odometry, '/ground_truth', self.ground_truth_callback, qos_profile_sensor_data)  
         else:
             self.get_logger().info("Modus: Nutze Standard-Odometrie (/odom)")
             self.odom_sub = self.create_subscription(
@@ -113,14 +114,12 @@ class DockingController(Node):
     def log_debug(self, msg):
         self.get_logger().info(msg, throttle_duration_sec=1.0)
 
-    def ground_truth_callback(self, msg: PoseArray):
-        if len(msg.poses) == 0: return
-        robot_pose = msg.poses[0]
-        pos = robot_pose.position
-        orient = robot_pose.orientation
-        _, _, yaw = euler_from_quaternion([orient.x, orient.y, orient.z, orient.w])
-        self.current_odom_pose = (pos.x, pos.y, yaw)
-        if not self.odom_received_once: self.odom_received_once = True
+    def ground_truth_callback(self, msg: Odometry): # Typ ist jetzt Odometry!
+    	pos = msg.pose.pose.position
+    	orient = msg.pose.pose.orientation
+    	_, _, yaw = euler_from_quaternion([orient.x, orient.y, orient.z, orient.w])
+    	self.current_odom_pose = (pos.x, pos.y, yaw)
+    	if not self.odom_received_once: self.odom_received_once = True
     
     def normalize_angle(self, angle):
         """Hilfsfunktion um Winkel auf -pi bis pi zu normalisieren"""
