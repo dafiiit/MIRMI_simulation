@@ -29,14 +29,14 @@
 # 5. Tiefen-Kamera (für Nav2 / LaserScan)
 # Das Tiefenbild selbst
 - ros_topic_name: "/depth/image_raw"
-  gz_topic_name: "/model/robot/depth_camera/depth"
+  gz_topic_name: "/model/robot/depth_camera"
   ros_type_name: "sensor_msgs/msg/Image"
   gz_type_name: "gz.msgs.Image"
   direction: GZ_TO_ROS
 
 # Die Kamera-Infos für das Tiefenbild
 - ros_topic_name: "/depth/camera_info"
-  gz_topic_name: "/model/robot/depth_camera/depth/camera_info"
+  gz_topic_name: "/model/robot/depth_camera/camera_info"
   ros_type_name: "sensor_msgs/msg/CameraInfo"
   gz_type_name: "gz.msgs.CameraInfo"
   direction: GZ_TO_ROS
