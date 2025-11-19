@@ -114,12 +114,14 @@ class DockingController(Node):
     def log_debug(self, msg):
         self.get_logger().info(msg, throttle_duration_sec=1.0)
 
-    def ground_truth_callback(self, msg: Odometry): # Typ ist jetzt Odometry!
-    	pos = msg.pose.pose.position
-    	orient = msg.pose.pose.orientation
-    	_, _, yaw = euler_from_quaternion([orient.x, orient.y, orient.z, orient.w])
-    	self.current_odom_pose = (pos.x, pos.y, yaw)
-    	if not self.odom_received_once: self.odom_received_once = True
+    def ground_truth_callback(self, msg: Odometry): 
+        pos = msg.pose.pose.position
+        orient = msg.pose.pose.orientation
+        _, _, yaw = euler_from_quaternion([orient.x, orient.y, orient.z, orient.w])
+        self.raw_odom_pose = (pos.x, pos.y, yaw) 
+        
+        self.current_odom_pose = (pos.x, pos.y, yaw)
+        if not self.odom_received_once: self.odom_received_once = True
     
     def normalize_angle(self, angle):
         """Hilfsfunktion um Winkel auf -pi bis pi zu normalisieren"""
@@ -152,7 +154,14 @@ class DockingController(Node):
         # Reset Status
         self.change_state(DockingState.SEARCHING)
         self.has_localized = False
-        self.get_logger().info(f"⚠️ RESET POSITION: Offset neu gesetzt. Theta-Offset: {self.odom_offset_theta:.2f}")
+        self.last_target_detection = None # Alte Detektion löschen
+        self.current_arc_goal = None
+        self._align_nudge_active = False
+        self._docking_drive_active = False
+        
+        # Sicherheitshalber Stop senden
+        self.publish_twist(0.0, 0.0)
+        self.get_logger().info(f"⚠️ RESET POSITION: Offset neu gesetzt. State -> SEARCHING")
 
     def odom_callback(self, msg: Odometry):
         pos = msg.pose.pose.position

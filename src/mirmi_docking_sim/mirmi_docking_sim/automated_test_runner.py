@@ -146,16 +146,29 @@ class DockingTestRunner(Node):
             
             self.perform_teleport()
             
-            # Länger warten (2.0s) damit Physik sich beruhigt
+            # Warten bis Physik sich beruhigt
             self.wait_until_time = time.time() + 2.0 
             self.runner_state = "RESETTING"
 
         elif self.runner_state == "RESETTING":
             if time.time() > self.wait_until_time:
-                # JETZT erst das Reset Signal senden, wenn der Roboter sicher steht
                 self.send_reset_signal()
+                # NEU: Nicht sofort RUNNING, sondern erst auf Bestätigung warten
+                self.runner_state = "WAIT_FOR_CONTROLLER_RESET"
+                self.last_reset_send_time = time.time()
+
+        elif self.runner_state == "WAIT_FOR_CONTROLLER_RESET":
+            # 1. Haben wir die Bestätigung?
+            if self.current_controller_state == "SEARCHING":
+                self.get_logger().info("Controller hat Reset bestätigt (SEARCHING). GO!")
                 self.start_time = time.time()
                 self.runner_state = "RUNNING"
+            
+            # 2. Timeout / Retry falls Nachricht verloren ging
+            elif (time.time() - self.last_reset_send_time) > 1.0:
+                self.get_logger().warn("Warte auf Controller-Reset... Sende erneut.")
+                self.send_reset_signal()
+                self.last_reset_send_time = time.time()
 
         elif self.runner_state == "RUNNING":
             if (time.time() - self.start_time) > self.TIMEOUT_SEC:
@@ -163,18 +176,30 @@ class DockingTestRunner(Node):
                 self.runner_state = "INIT"
                 return
 
-            # Kollisionsprüfung
+            # Kollisionsprüfung (mit der Anpassung aus dem vorherigen Schritt)
             cx = self.current_pose.position.x
             cy = self.current_pose.position.y
-            if (self.HUT_COLLISION_BOX['x_min'] < cx < self.HUT_COLLISION_BOX['x_max'] and
-                self.HUT_COLLISION_BOX['y_min'] < cy < self.HUT_COLLISION_BOX['y_max']):
-                
+            
+            # Erlaubte Zustände in der Nähe der Hütte
+            allowed_states = ["DOCKING", "FINAL_STOP", "FINAL_ALIGNMENT", "ALIGN_TO_HUT"]
+            is_docking = self.current_controller_state in allowed_states
+
+            is_in_box = (self.HUT_COLLISION_BOX['x_min'] < cx < self.HUT_COLLISION_BOX['x_max'] and
+                         self.HUT_COLLISION_BOX['y_min'] < cy < self.HUT_COLLISION_BOX['y_max'])
+
+            if is_in_box and not is_docking:
                 self.log_result("FAILURE", "COLLISION_WITH_HUT")
-                self.get_logger().error("KOLLISION! Warte auf Reset...")
-                self.cmd_vel_pub.publish(Twist()) # Stop
+                self.get_logger().error(f"KOLLISION im State {self.current_controller_state}! Reset...")
+                self.cmd_vel_pub.publish(Twist()) 
                 self.recovery_start_time = time.time()
                 self.runner_state = "COLLISION_RECOVERY"
                 return
+            
+            # Crash in Rückwand Check
+            if is_docking and cx < 3.65:
+                 self.log_result("FAILURE", "CRASH_INTO_BACK_WALL")
+                 self.runner_state = "INIT"
+                 return
 
             if self.current_controller_state == "FINAL_STOP":
                 dist_to_hut = np.linalg.norm([cx - self.HUT_POSITION[0], cy - self.HUT_POSITION[1]])

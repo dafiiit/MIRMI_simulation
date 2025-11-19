@@ -208,9 +208,9 @@ def generate_launch_description():
         '--x', '1.0', 
         '--y', '0.0', 
         '--z', '0.25',
-        '--yaw', '0.0', 
+        '--yaw', '-1.5708',   # -90 Grad um Z
         '--pitch', '0.0', 
-        '--roll', '0.0',
+        '--roll', '-1.5708',  # -90 Grad um X
         '--frame-id', 'robot/chassis',          # Übergeordneter Frame
         '--child-frame-id', 'robot/chassis/camera_sensor' # Frame-Name aus Gazebo
         ]

@@ -1,0 +1,3 @@
+Versuch_ID,Ergebnis,Dauer,Start_Distanz,Fehlergrund
+1,FAILURE,65.70,7.04,COLLISION_WITH_HUT
+2,FAILURE,120.09,7.46,TIMEOUT
