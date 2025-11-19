@@ -15,6 +15,8 @@ import os
 import sys
 import subprocess
 from datetime import datetime
+# WICHTIG: tf2_ros imports für den Listener
+from tf2_ros import Buffer, TransformListener, TransformException
 from tf_transformations import quaternion_from_euler, quaternion_matrix, euler_from_quaternion, translation_matrix, concatenate_matrices
 
 class DockingTestRunner(Node):
@@ -31,9 +33,13 @@ class DockingTestRunner(Node):
             'y_min': 0.8, 'y_max': 3.2 
         }
 
+        # TF Buffer & Listener initialisieren (NEU)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
         # Speicherort: Home-Verzeichnis -> docking_test_results
         home_dir = os.path.expanduser("~")
-        self.results_dir = os.path.join(home_dir, "docking_test_results")
+        self.results_dir = "/home/david/ros2_ws/data/test_1"
         os.makedirs(self.results_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -60,14 +66,15 @@ class DockingTestRunner(Node):
         self.detection_errors = [] 
         self.TAG_1_TRUE_POS = np.array([3.601, 2.0, 0.75]) 
         
-        # Statischer Kamera Offset (WICHTIG: Muss zum Launch File passen!)
+        # Statischer Kamera Offset
+        # Wir behalten dies für die Kette: World->Robot->Camera->Tag
         try:
             cam_trans = translation_matrix((1.0, 0.0, 0.25))
             cam_rot = quaternion_matrix(quaternion_from_euler(-1.5708, 0.0, -1.5708))
             self.T_robot_camera = concatenate_matrices(cam_trans, cam_rot)
         except Exception as e:
             self.get_logger().error(f"Fehler bei Matrix-Init: {e}")
-            self.T_robot_camera = np.eye(4) # Fallback
+            self.T_robot_camera = np.eye(4)
 
         self.runner_state = "INIT" 
         self.get_logger().info(f"Test Runner gestartet. CSV: {self.csv_filename}")
@@ -118,9 +125,9 @@ class DockingTestRunner(Node):
                     f"{ex:.2f}", f"{ey:.2f}", f"{et:.2f}",
                     avg_error
                 ])
-                file.flush() # Erzwingt Schreiben auf Disk
+                file.flush()
             
-            self.get_logger().info(f"Ergebnis {self.current_attempt}: {result} ({reason})")
+            self.get_logger().info(f"Ergebnis {self.current_attempt}: {result} ({reason}) | Avg Error: {avg_error}")
         except Exception as e:
             self.get_logger().error(f"CRITICAL: Fehler beim Loggen des Ergebnisses: {e}")
 
@@ -131,44 +138,76 @@ class DockingTestRunner(Node):
         self.current_controller_state = msg.data
 
     def detection_callback(self, msg):
-        """Berechnet Fehler sicher in try-except Block"""
-        try:
-            if self.runner_state != "RUNNING" or not self.current_pose:
-                return
-            if not msg.detections:
-                return
-                
-            tag_detection = None
-            for d in msg.detections:
-                if d.id == 1:
-                    tag_detection = d
-                    break
+        """
+        NEU: Nutzt TF Lookup statt msg.pose, da msg.pose oft leer ist.
+        """
+        if self.runner_state != "RUNNING" or not self.current_pose:
+            return
+        if not msg.detections:
+            return
+
+        # Prüfen ob Tag 1 gesehen wurde
+        tag_found = False
+        for d in msg.detections:
+            # ID Check (safety für 'id' vs 'ids')
+            current_id = -1
+            if hasattr(d, 'id'):
+                current_id = d.id
+            elif hasattr(d, 'ids') and len(d.ids) > 0:
+                current_id = d.ids[0]
             
-            if tag_detection:
+            if current_id == 1:
+                tag_found = True
+                break
+        
+        if tag_found:
+            try:
+                # Wir suchen die Transformation: Camera -> Tag
+                # Der Header der Detection-Message enthält meist den Frame der Kamera (z.B. 'robot/chassis/camera_sensor')
+                camera_frame = msg.header.frame_id
+                tag_frame = 'tag36_11_00001' # Name des TF Frames den die apriltag_node publiziert
+
+                # Lookup: Wo ist der Tag relativ zur Kamera? (Zeitpunkt: Jetzt/Latest)
+                t = self.tf_buffer.lookup_transform(
+                    camera_frame, 
+                    tag_frame, 
+                    rclpy.time.Time()) # oder rclpy.time.Time() für 'latest'
+                
+                # --- Berechnung ---
+                
+                # 1. Robot Pose (Ground Truth) -> T_world_robot
                 p = self.current_pose.position
                 q = self.current_pose.orientation
                 T_world_robot = concatenate_matrices(
                     translation_matrix((p.x, p.y, p.z)),
                     quaternion_matrix((q.x, q.y, q.z, q.w))
                 )
-                
-                # Hier 3x .pose, da Structure: Detection -> PoseWithCov -> Pose -> Pose
-                tp = tag_detection.pose.pose.pose.position
-                tq = tag_detection.pose.pose.pose.orientation
+
+                # 2. Tag Pose relativ zur Kamera (Aus TF Lookup) -> T_camera_tag
+                tp = t.transform.translation
+                tq = t.transform.rotation
                 T_camera_tag = concatenate_matrices(
                     translation_matrix((tp.x, tp.y, tp.z)),
                     quaternion_matrix((tq.x, tq.y, tq.z, tq.w))
                 )
                 
+                # 3. Kette: World -> Robot -> Camera -> Tag
+                # Wir nutzen self.T_robot_camera (statisch definiert in __init__), da die GT Pose für 'robot/chassis' gilt
                 T_world_tag_estimated = concatenate_matrices(T_world_robot, self.T_robot_camera, T_camera_tag)
+                
                 est_pos = T_world_tag_estimated[:3, 3]
                 
+                # 4. Fehler zum echten Tag 1
                 error = np.linalg.norm(est_pos - self.TAG_1_TRUE_POS)
+                
                 self.detection_errors.append(error)
-        except Exception as e:
-            # Fange Fehler ab, damit Node nicht stirbt
-            # self.get_logger().warn(f"Fehler in Detection Calc: {e}") # Optional einkommentieren
-            pass
+                
+            except TransformException as e:
+                # Das kann passieren, wenn der TF kurzzeitig noch nicht da ist
+                # self.get_logger().warn(f"TF Lookup fehlgeschlagen: {e}") 
+                pass
+            except Exception as e:
+                self.get_logger().error(f"Fehler in Error-Calc: {e}")
 
     def get_random_start_pose(self):
         dist = random.uniform(6.0, 10.0)
@@ -252,9 +291,9 @@ class DockingTestRunner(Node):
                     self.last_reset_send_time = time.time()
 
             elif self.runner_state == "RUNNING":
-                # Debug Log alle 2 Sekunden, falls er hängt
+                # Debug Log alle 2 Sekunden
                 if int(time.time()) % 2 == 0 and int(time.time()*10) % 10 == 0:
-                     self.get_logger().info(f"RUNNING: State={self.current_controller_state}, PoseX={self.current_pose.position.x:.1f}", throttle_duration_sec=2.0)
+                     self.get_logger().info(f"RUNNING: State={self.current_controller_state}", throttle_duration_sec=2.0)
 
                 if (time.time() - self.start_time) > self.TIMEOUT_SEC:
                     self.log_result("FAILURE", "TIMEOUT")
