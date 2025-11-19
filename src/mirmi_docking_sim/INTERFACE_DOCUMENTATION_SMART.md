@@ -1,45 +1,13 @@
-# Interface Dokumentation & Visualisierung
-> Automatisch generiert aus Source Code, Launchfiles und Configs.
+# Smart Interface Dokumentation
+> Mit erweitertem Wissen über Standard-Nodes (AprilTag, etc.).
 
-## Übersicht der Nodes
-- **DockingTestRunner** (Python): 2 Subs, 2 Pubs
-- **FakeCameraInfoPublisher** (Python): 1 Subs, 1 Pubs
-- **OdomToTFPublisher** (Python): 1 Subs, 0 Pubs
-- **AprilTagVisualizer** (Python): 2 Subs, 1 Pubs
-- **DockingController** (Python): 4 Subs, 2 Pubs
-- **parameter_bridge** (Launch): 0 Remappings
-- **camera_info_sync_node** (Launch): 0 Remappings
-- **apriltag_detector** (Launch): 3 Remappings
-- **depth_to_scan_node** (Launch): 3 Remappings
-- **static_tag_1_publisher** (Launch): 0 Remappings
-- **static_tag_2_publisher** (Launch): 0 Remappings
-- **static_tag_3_publisher** (Launch): 0 Remappings
-- **static_tag_4_publisher** (Launch): 0 Remappings
-- **apriltag_visualizer** (Launch): 0 Remappings
-- **docking_controller** (Launch): 0 Remappings
-- **odom_to_tf_publisher** (Launch): 0 Remappings
-- **static_camera_publisher** (Launch): 0 Remappings
-- **automated_test_runner** (Launch): 0 Remappings
+## Erkanntes Verhalten
+Das Skript nutzt eine Wissensdatenbank für folgende Launch-Executables:
+- `apriltag_node`
+- `depthimage_to_laserscan_node`
+- `static_transform_publisher`
 
-## Gazebo Bridge Mapping
-| ROS Topic | Gazebo Topic |
-|---|---|
-| `/cmd_vel` | `/model/robot/cmd_vel` |
-| `/odom` | `/model/robot/odometry` |
-| `/joint_states` | `/world/docking_world/model/robot/joint_state` |
-| `/camera/image_raw` | `/model/robot/camera` |
-| `/depth/image_raw` | `/model/robot/depth_camera/depth` |
-| `/depth/camera_info` | `/model/robot/depth_camera/depth/camera_info` |
-| `/model/robot/pose` | `/model/robot/pose` |
-| `/model/robot/set_pose` | `/model/robot/set_pose` |
-
-## System Architektur (Mermaid Visualisierung)
-Das folgende Diagramm zeigt den Datenfluss. 
-- **Grün**: ROS Nodes
-- **Gelb**: Gazebo Simulation
-- **Rot**: Bridge
-- **Grau**: ROS Topics
-
+## System Architektur
 ```mermaid
 graph LR
     classDef rosNode fill:#d4edda,stroke:#28a745,stroke-width:2px;
@@ -70,33 +38,43 @@ graph LR
     detections --> DockingController
     initialpose --> DockingController
 
-    %% Launch Nodes
+    %% Launch Nodes (Smart)
     parameter_bridge(parameter_bridge):::rosNode
     camera_info_sync_node(camera_info_sync_node):::rosNode
     apriltag_detector(apriltag_detector):::rosNode
-    apriltag_detector -.-> camera_image_raw([/camera/image_raw]):::topic
-    apriltag_detector -.-> camera_camera_info([/camera/camera_info]):::topic
-    apriltag_detector -.-> camera_tag_detections_image([/camera/tag_detections_image]):::topic
+    camera_image_raw([/camera/image_raw]):::topic --> apriltag_detector
+    camera_camera_info([/camera/camera_info]):::topic --> apriltag_detector
+    apriltag_detector --> detections([detections]):::topic
+    apriltag_detector --> camera_tag_detections_image([/camera/tag_detections_image]):::topic
+    apriltag_detector --> tf([tf]):::topic
     depth_to_scan_node(depth_to_scan_node):::rosNode
-    depth_to_scan_node -.-> depth_image_raw([/depth/image_raw]):::topic
-    depth_to_scan_node -.-> depth_camera_info([/depth/camera_info]):::topic
-    depth_to_scan_node -.-> scan([/scan]):::topic
+    depth_image_raw([/depth/image_raw]):::topic --> depth_to_scan_node
+    depth_camera_info([/depth/camera_info]):::topic --> depth_to_scan_node
+    depth_to_scan_node --> scan([/scan]):::topic
     static_tag_1_publisher(static_tag_1_publisher):::rosNode
+    static_tag_1_publisher --> tf([/tf]):::topic
+    static_tag_1_publisher --> tf_static([/tf_static]):::topic
     static_tag_2_publisher(static_tag_2_publisher):::rosNode
+    static_tag_2_publisher --> tf([/tf]):::topic
+    static_tag_2_publisher --> tf_static([/tf_static]):::topic
     static_tag_3_publisher(static_tag_3_publisher):::rosNode
+    static_tag_3_publisher --> tf([/tf]):::topic
+    static_tag_3_publisher --> tf_static([/tf_static]):::topic
     static_tag_4_publisher(static_tag_4_publisher):::rosNode
+    static_tag_4_publisher --> tf([/tf]):::topic
+    static_tag_4_publisher --> tf_static([/tf_static]):::topic
     apriltag_visualizer(apriltag_visualizer):::rosNode
     docking_controller(docking_controller):::rosNode
     odom_to_tf_publisher(odom_to_tf_publisher):::rosNode
     static_camera_publisher(static_camera_publisher):::rosNode
+    static_camera_publisher --> tf([/tf]):::topic
+    static_camera_publisher --> tf_static([/tf_static]):::topic
     automated_test_runner(automated_test_runner):::rosNode
 
-    %% Gazebo
+    %% Gazebo & Bridge
     GazeboSim(Gazebo Simulation):::gzNode
     GazeboSim -- camera_sensor --> model_robot_camera[[/model/robot/camera]]:::gzNode
     GazeboSim -- depth_sensor --> model_robot_depth_camera[[/model/robot/depth_camera]]:::gzNode
-
-    %% Bridge
     cmd_vel ==> Bridge_cmd_vel_model_robot_cmd_vel{Bridge}:::bridge ==> model_robot_cmd_vel
     model_robot_odometry ==> Bridge_odom_model_robot_odometry{Bridge}:::bridge ==> odom
     world_docking_world_model_robot_joint_state ==> Bridge_joint_states_world_docking_world_model_robot_joint_state{Bridge}:::bridge ==> joint_states

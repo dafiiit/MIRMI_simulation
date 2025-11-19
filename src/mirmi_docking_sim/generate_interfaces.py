@@ -3,10 +3,29 @@ import re
 from pathlib import Path
 
 # Konfiguration
-OUTPUT_FILE = "INTERFACE_DOCUMENTATION_VISUAL.md"
+OUTPUT_FILE = "INTERFACE_DOCUMENTATION_SMART.md"
 ROOT_DIR = os.getcwd()
 
-# Regex Patterns (wie zuvor)
+# --- WISSENSDATENBANK FÜR EXTERNE NODES ---
+# Hier definieren wir Inputs/Outputs für Nodes, deren Code wir nicht haben.
+# Format: 'executable_name': {'subs': [...], 'pubs': [...]}
+STANDARD_INTERFACES = {
+    'apriltag_node': {
+        'subs': ['image_rect', 'camera_info'],
+        'pubs': ['detections', 'tag_detections_image', 'tf']
+    },
+    'depthimage_to_laserscan_node': {
+        'subs': ['image', 'camera_info'],
+        'pubs': ['scan']
+    },
+    'static_transform_publisher': {
+        'subs': [],
+        'pubs': ['/tf', '/tf_static']
+    },
+    # Hier können weitere Nodes ergänzt werden
+}
+
+# Regex Patterns
 PATTERNS = {
     'node_class': re.compile(r'class\s+(\w+)\(Node\):'),
     'publisher': re.compile(r'create_publisher\s*\(\s*(\w+),\s*[\'"]([^\'"]+)[\'"]'),
@@ -82,7 +101,7 @@ def analyze_launch_file(path, content, data):
     for line in lines:
         stripped = line.strip()
         if 'Node(' in stripped and 'import' not in stripped:
-            current_node = {'package': '?', 'executable': '?', 'name': '?', 'remappings': [], 'params': [], 'file': path.name}
+            current_node = {'package': '?', 'executable': '?', 'name': '?', 'remappings': {}, 'params': [], 'file': path.name}
             brace_count = stripped.count('(') - stripped.count(')')
         
         elif current_node:
@@ -93,10 +112,11 @@ def analyze_launch_file(path, content, data):
                 m = re.search(r"name=['\"]([^'\"]+)['\"]", stripped)
                 if m: current_node['name'] = m.group(1)
             
-            # Remappings: ('old', 'new')
+            # Remappings: Wir speichern sie jetzt als Dictionary für leichteren Lookup
+            # Format: internal -> external
             remaps = re.findall(r"\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)", stripped)
             for r in remaps:
-                current_node['remappings'].append(r) # Store tuple (internal, global)
+                current_node['remappings'][r[0]] = r[1]
                 data['all_topics'].add(r[1])
 
             if brace_count <= 0:
@@ -129,11 +149,9 @@ def analyze_bridge_config(path, content, data):
             })
 
 def clean_id(name):
-    """Erstellt valide Mermaid-IDs aus Strings (ersetzt / durch _)"""
     return name.replace('/', '_').replace('.', '_').replace('-', '_').strip('_')
 
 def generate_mermaid(data):
-    """Generiert den Mermaid Graph Code"""
     lines = ["```mermaid", "graph LR"]
     
     # Styles
@@ -142,57 +160,59 @@ def generate_mermaid(data):
     lines.append("    classDef topic fill:#e2e3e5,stroke:#6c757d,stroke-width:1px,rx:5,ry:5;")
     lines.append("    classDef bridge fill:#f8d7da,stroke:#dc3545,stroke-width:2px,stroke-dasharray: 5 5;")
 
-    # 1. ROS Nodes (Python)
+    # 1. ROS Python Nodes (wie gehabt)
     lines.append("\n    %% ROS Python Nodes")
     for node in data['py_nodes']:
         nid = clean_id(node['class'])
         lines.append(f"    {nid}({node['class']}):::rosNode")
-        
-        # Pubs
         for pub in node['pubs']:
-            tid = clean_id(pub['topic'])
-            lines.append(f"    {nid} --> {tid}([{pub['topic']}]):::topic")
-        
-        # Subs
+            lines.append(f"    {nid} --> {clean_id(pub['topic'])}([{pub['topic']}]):::topic")
         for sub in node['subs']:
-            tid = clean_id(sub['topic'])
-            lines.append(f"    {tid} --> {nid}")
+            lines.append(f"    {clean_id(sub['topic'])} --> {nid}")
 
-    # 2. Launch Nodes (External)
-    lines.append("\n    %% Launch Nodes")
+    # 2. Launch Nodes (SMART LOGIC)
+    lines.append("\n    %% Launch Nodes (Smart)")
     for node in data['launch_nodes']:
-        # Name fallback
         display_name = node['name'] if node['name'] != '?' else node['executable']
         nid = clean_id(display_name)
         lines.append(f"    {nid}({display_name}):::rosNode")
         
-        # Remappings als Verbindungen
-        for internal, external in node['remappings']:
-            tid = clean_id(external)
-            # Heuristik: "image" oder "scan" ist oft Input (Sub), "cmd" Output (Pub)
-            # Da wir es nicht sicher wissen, nutzen wir eine neutrale Linie, 
-            # oder wir raten für Visualisierung. Hier: Durchgezogene Linie.
-            lines.append(f"    {nid} -.-> {tid}([{external}]):::topic")
+        exec_name = node['executable']
+        
+        # Fall A: Wir kennen den Node (Standard Interface vorhanden)
+        if exec_name in STANDARD_INTERFACES:
+            std = STANDARD_INTERFACES[exec_name]
+            
+            # Subscriptions abhandeln
+            for internal_sub in std['subs']:
+                # Wurde remapped? Wenn ja, nimm neuen Namen. Wenn nein, nimm Standard.
+                topic = node['remappings'].get(internal_sub, internal_sub)
+                # Zeichne Topic -> Node (Subs haben Input-Pfeile)
+                lines.append(f"    {clean_id(topic)}([{topic}]):::topic --> {nid}")
+            
+            # Publishers abhandeln
+            for internal_pub in std['pubs']:
+                topic = node['remappings'].get(internal_pub, internal_pub)
+                # Zeichne Node -> Topic (Pubs haben Output-Pfeile)
+                lines.append(f"    {nid} --> {clean_id(topic)}([{topic}]):::topic")
 
-    # 3. Gazebo Simulation
-    lines.append("\n    %% Gazebo")
+        # Fall B: Unbekannter Node -> Fallback auf alte Logik (nur Remappings anzeigen)
+        else:
+            for internal, external in node['remappings'].items():
+                lines.append(f"    {nid} -.-> {clean_id(external)}([{external}]):::topic")
+
+    # 3. Gazebo & Bridge (wie gehabt)
+    lines.append("\n    %% Gazebo & Bridge")
     lines.append(f"    GazeboSim(Gazebo Simulation):::gzNode")
     for model in data['sdf_models']:
         for s in model['sensors']:
             if s['topic'] and s['topic'] != 'default':
-                gz_tid = clean_id(s['topic'])
-                # Sensor publiziert in Gazebo
-                lines.append(f"    GazeboSim -- {s['name']} --> {gz_tid}[[{s['topic']}]]:::gzNode")
+                lines.append(f"    GazeboSim -- {s['name']} --> {clean_id(s['topic'])}[[{s['topic']}]]:::gzNode")
 
-    # 4. Bridge
-    lines.append("\n    %% Bridge")
     for b in data['bridge_config']['topics']:
         rid = clean_id(b['ros'])
         gid = clean_id(b['gz'])
         bridge_node = f"Bridge_{rid}_{gid}"
-        
-        # Verbindung Visualisieren
-        # Gazebo Topic <--> Bridge <--> ROS Topic
         
         if "GZ_TO_ROS" in b['dir'] or "BIDIRECTIONAL" in b['dir']:
             lines.append(f"    {gid} ==> {bridge_node}{{Bridge}}:::bridge ==> {rid}")
@@ -203,40 +223,25 @@ def generate_mermaid(data):
     return "\n".join(lines)
 
 def generate_markdown(data):
-    # ... (Alter Text Generierung Code, verkürzt für Übersichtlichkeit) ...
-    # Wir nutzen den gleichen Text-Generator wie vorher, hängen aber Mermaid an.
-    
     lines = []
-    lines.append("# Interface Dokumentation & Visualisierung")
-    lines.append("> Automatisch generiert aus Source Code, Launchfiles und Configs.\n")
+    lines.append("# Smart Interface Dokumentation")
+    lines.append("> Mit erweitertem Wissen über Standard-Nodes (AprilTag, etc.).\n")
     
-    # Kurzer Text-Teil (Zusammenfassung)
-    lines.append("## Übersicht der Nodes")
-    for n in data['py_nodes']:
-        lines.append(f"- **{n['class']}** (Python): {len(n['subs'])} Subs, {len(n['pubs'])} Pubs")
-    for n in data['launch_nodes']:
-        name = n['name'] if n['name'] != '?' else n['executable']
-        lines.append(f"- **{name}** (Launch): {len(n['remappings'])} Remappings")
-        
-    lines.append("\n## Gazebo Bridge Mapping")
-    lines.append("| ROS Topic | Gazebo Topic |")
-    lines.append("|---|---|")
-    for b in data['bridge_config']['topics']:
-        lines.append(f"| `{b['ros']}` | `{b['gz']}` |")
-
-    lines.append("\n## System Architektur (Mermaid Visualisierung)")
-    lines.append("Das folgende Diagramm zeigt den Datenfluss. \n- **Grün**: ROS Nodes\n- **Gelb**: Gazebo Simulation\n- **Rot**: Bridge\n- **Grau**: ROS Topics\n")
+    lines.append("## Erkanntes Verhalten")
+    lines.append("Das Skript nutzt eine Wissensdatenbank für folgende Launch-Executables:")
+    for k in STANDARD_INTERFACES.keys():
+        lines.append(f"- `{k}`")
     
+    lines.append("\n## System Architektur")
     lines.append(generate_mermaid(data))
-    
     return "\n".join(lines)
 
 def main():
-    print(f"Scanne und Visualisiere: {ROOT_DIR} ...")
+    print(f"Scanne: {ROOT_DIR} ...")
     data = scan_files(ROOT_DIR)
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write(generate_markdown(data))
-    print(f"Fertig! Datei erstellt: {OUTPUT_FILE}")
+    print(f"Fertig: {OUTPUT_FILE}")
 
 if __name__ == "__main__":
     main()
