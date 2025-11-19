@@ -109,5 +109,5 @@ def generate_launch_description():
         static_rgb_camera_tf,
         static_depth_camera_tf,
         point_cloud_container,
-        # pcl_controller_node # Erst einkommentieren, wenn Datei erstellt ist
+        pcl_controller_node 
     ])
