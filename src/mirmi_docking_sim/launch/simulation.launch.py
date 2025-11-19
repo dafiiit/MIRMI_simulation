@@ -187,12 +187,17 @@ def generate_launch_description():
         }]
     )
     
+    # Odom node
     odom_tf_node = Node(
-    	package='mirmi_docking_sim',
-    	executable='odom_to_tf',
-    	name='odom_to_tf_publisher',
-    	output='screen'
-	)
+        package='mirmi_docking_sim',
+        executable='odom_to_tf',
+        name='odom_to_tf_publisher',
+        output='screen',
+        # ÄNDERUNG: Parameter durchreichen
+        parameters=[{
+            'use_ground_truth': LaunchConfiguration('use_ground_truth')
+        }]
+    )
 	
     #Definiert die Position der Kamera am Roboter
     static_camera_tf = Node(

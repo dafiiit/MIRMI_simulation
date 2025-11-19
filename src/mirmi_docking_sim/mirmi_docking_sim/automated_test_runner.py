@@ -37,7 +37,7 @@ class DockingTestRunner(Node):
         self.setup_csv()
 
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.create_subscription(Odometry, '/ground_truth', self.odom_callback, 10)
         self.create_subscription(String, '/docking_controller/state', self.state_callback, 10)
         self.initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
 

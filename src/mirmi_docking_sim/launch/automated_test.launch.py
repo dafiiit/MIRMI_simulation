@@ -13,7 +13,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(pkg_mirmi_docking_sim, 'launch', 'simulation.launch.py')
         ),
-        launch_arguments={'use_ground_truth': 'False'}.items()
+        launch_arguments={'use_ground_truth': 'True'}.items()
     )
 
     # 2. Test-Runner

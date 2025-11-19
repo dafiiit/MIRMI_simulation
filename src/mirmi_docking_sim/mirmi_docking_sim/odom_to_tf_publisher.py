@@ -11,6 +11,12 @@ class OdomToTFPublisher(Node):
     def __init__(self):
         super().__init__('odom_to_tf_publisher')
         
+        self.declare_parameter('use_ground_truth', False)
+        use_gt = self.get_parameter('use_ground_truth').value
+        
+        # Topic Auswahl
+        topic_name = '/ground_truth' if use_gt else '/odom'
+        
         # TF Broadcaster
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
         
@@ -25,12 +31,12 @@ class OdomToTFPublisher(Node):
         # Subscribe to odometry
         self.odom_sub = self.create_subscription(
             Odometry,
-            '/odom',
+            topic_name, # Hier die Variable nutzen
             self.odom_callback,
             qos_profile
         )
         
-        self.get_logger().info('Odometry to TF Publisher gestartet - subscribed to /odom')
+        self.get_logger().info('Odometry to TF Publisher gestartet - subscribed to {topic_name}')
         
         # Timer für Debug-Ausgaben
         self.debug_timer = self.create_timer(2.0, self.debug_callback)
