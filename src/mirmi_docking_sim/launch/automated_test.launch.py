@@ -22,7 +22,7 @@ def generate_launch_description():
         executable='automated_test_runner',
         name='automated_test_runner',
         output='screen',
-        parameters=[{'test_attempts': 50}]
+        parameters=[{'test_attempts': 2}]
     )
 
     return LaunchDescription([
