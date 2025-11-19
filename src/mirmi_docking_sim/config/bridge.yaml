@@ -34,12 +34,12 @@
   gz_type_name: "gz.msgs.Image"
   direction: GZ_TO_ROS
 
-# Die Kamera-Infos für das Tiefenbild
-- ros_topic_name: "/depth/camera_info"
-  gz_topic_name: "/model/robot/depth_camera/camera_info"
-  ros_type_name: "sensor_msgs/msg/CameraInfo"
-  gz_type_name: "gz.msgs.CameraInfo"
-  direction: GZ_TO_ROS
+# Die Kamera-Infos für das Tiefenbild (Wird jetzt vom Sync-Node übernommen)
+#- ros_topic_name: "/depth/camera_info"
+#  gz_topic_name: "/model/robot/depth_camera/camera_info"
+#  ros_type_name: "sensor_msgs/msg/CameraInfo"
+#  gz_type_name: "gz.msgs.CameraInfo"
+#  direction: GZ_TO_ROS
   
 # 6. Robot Pose
 #- ros_topic_name: "/model/robot/pose"

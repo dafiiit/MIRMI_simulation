@@ -70,6 +70,15 @@ def generate_launch_description():
         arguments=['1.0', '0.0', '0.25', '-1.5708', '0.0', '-1.5708', 'robot/chassis', 'robot/chassis/depth_sensor']
     )
 
+    # NEU: Depth Camera Info Sync Node
+    # Publiziert CameraInfo synchron zu den Depth Images
+    depth_info_sync_node = Node(
+        package='mirmi_docking_sim',
+        executable='depth_camera_info_sync',
+        name='depth_camera_info_sync',
+        output='screen'
+    )
+
     # 6. Point Cloud Processing Pipeline
     # Wir nutzen einen ComposableNodeContainer für effizienteres Intra-Process-Communication
     point_cloud_container = ComposableNodeContainer(
@@ -108,6 +117,7 @@ def generate_launch_description():
         odom_tf_node,
         static_rgb_camera_tf,
         static_depth_camera_tf,
+        depth_info_sync_node,
         point_cloud_container,
         pcl_controller_node 
     ])
