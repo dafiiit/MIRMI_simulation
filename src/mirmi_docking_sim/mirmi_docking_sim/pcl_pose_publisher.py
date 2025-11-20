@@ -30,6 +30,8 @@ class PCLPosePublisher(Node):
         self.reference_cloud = self.generate_reference_cloud()
         self.reference_tree = KDTree(self.reference_cloud) # Pre-build KDTree
         
+        self.last_transform = None # For tracking
+        
         self.get_logger().info('PCL Localization Node started.')
 
     def generate_reference_cloud(self):
@@ -77,7 +79,8 @@ class PCLPosePublisher(Node):
         Filters and downsamples the point cloud.
         """
         # Filter by Depth (Z in camera frame)
-        mask = (points[:, 2] > 0.5) & (points[:, 2] < 5.0)
+        # Increased range to 8.0m to see back wall even from distance
+        mask = (points[:, 2] > 0.5) & (points[:, 2] < 8.0)
         points = points[mask]
         
         # Filter by Height (Y in camera frame, Y is down)
@@ -106,13 +109,20 @@ class PCLPosePublisher(Node):
             self.get_logger().warn(f"Not enough points after preprocessing: {len(scene_points)}")
             return
 
-        # 3. Initial Guess (Centroid Alignment)
-        centroid_src = np.mean(scene_points, axis=0)
-        centroid_dst = np.mean(self.reference_cloud, axis=0)
-        translation_init = centroid_dst - centroid_src
+        # 3. Initial Guess
+        # If we have a previous good estimate, use it (Tracking).
+        # Otherwise, use Centroid Alignment (Initialization).
         
-        T_init = np.eye(4)
-        T_init[:3, 3] = translation_init
+        if self.last_transform is not None:
+             T_init = self.last_transform
+        else:
+            # Centroid Alignment (Fallback)
+            centroid_src = np.mean(scene_points, axis=0)
+            centroid_dst = np.mean(self.reference_cloud, axis=0)
+            translation_init = centroid_dst - centroid_src
+            
+            T_init = np.eye(4)
+            T_init[:3, 3] = translation_init
         
         # 4. ICP
         # Returns T that maps Scene -> Reference (Camera Frame -> Hut Frame)
@@ -122,7 +132,15 @@ class PCLPosePublisher(Node):
         fitness = np.mean(distances)
         if fitness > 0.05: # Threshold
             self.get_logger().warn(f"ICP fitness poor: {fitness:.4f} (Iter: {iterations})")
+            # If tracking failed, reset it to force Centroid Alignment next time?
+            # Or keep it? If we reset, we might jump.
+            # Let's reset if it's REALLY bad.
+            if fitness > 0.1:
+                self.last_transform = None
             return
+        
+        # Update Tracking
+        self.last_transform = T_hut_cam
         
         self.get_logger().info(f"ICP Success. Fitness: {fitness:.4f}. Publishing Pose.")
 
