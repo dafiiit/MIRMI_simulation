@@ -57,17 +57,34 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_rgb_camera_publisher',
-        arguments=['1.0', '0.0', '0.25', '-1.5708', '0.0', '-1.5708', 'robot/chassis', 'robot/chassis/camera_sensor']
+        arguments=[
+            '--x', '1.0', 
+            '--y', '0.0', 
+            '--z', '0.25',
+            '--yaw', '-1.5708', 
+            '--pitch', '0.0', 
+            '--roll', '-1.5708',
+            '--frame-id', 'robot/chassis',
+            '--child-frame-id', 'robot/chassis/camera_sensor'
+        ]
     )
 
     # NEU: Depth Kamera TF
     # Annahme: Gleiche Position wie RGB, aber eigener Frame.
-    # Der Frame-Name 'robot/chassis/depth_sensor' muss mit dem Header der Gazebo-Message übereinstimmen (siehe Bridge Output oder Foxglove)
     static_depth_camera_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_depth_camera_publisher',
-        arguments=['1.0', '0.0', '0.25', '-1.5708', '0.0', '-1.5708', 'robot/chassis', 'robot/chassis/depth_sensor']
+        arguments=[
+            '--x', '1.0', 
+            '--y', '0.0', 
+            '--z', '0.25',
+            '--yaw', '-1.5708', 
+            '--pitch', '0.0', 
+            '--roll', '-1.5708',
+            '--frame-id', 'robot/chassis',
+            '--child-frame-id', 'robot/chassis/depth_sensor'
+        ]
     )
 
     # NEU: Depth Camera Info Sync Node
