@@ -7,6 +7,8 @@ import math
 import numpy as np
 from geometry_msgs.msg import Twist, PoseWithCovarianceStamped, PoseStamped
 from nav_msgs.msg import Odometry
+import tf2_ros
+from tf2_ros import TransformException
 from tf_transformations import euler_from_quaternion
 from rclpy.qos import qos_profile_sensor_data, QoSProfile, DurabilityPolicy
 from std_msgs.msg import String
@@ -26,220 +28,332 @@ class DockingController(Node):
     def __init__(self):
         super().__init__('docking_controller')
         
-        # --- Parameter ---
-        self.declare_parameter('use_ground_truth', False)
-        self.use_ground_truth = self.get_parameter('use_ground_truth').value
+        # Offset-Variablen
+        self.odom_offset_x = 0.0
+        self.odom_offset_y = 0.0
+        self.odom_offset_theta = 0.0
+        self.raw_odom_pose = None 
         
-        # --- Constants ---
-        self.HUT_CENTER_GLOBAL = np.array([5.0, 2.0]) # Globale Position der Hütte (für Navigation)
+        # Parameter
+        self.declare_parameter('use_ground_truth', False)
+        gt_param = self.get_parameter('use_ground_truth').value
+        self.use_ground_truth = str(gt_param).lower() == 'true'
+        
+        # Subscriber für Odometrie
+        if self.use_ground_truth:
+            self.get_logger().warn("!!! ACHTUNG: Nutze GROUND TRUTH (/ground_truth) !!!")
+            self.gt_sub = self.create_subscription(Odometry, '/ground_truth', self.ground_truth_callback, qos_profile_sensor_data)  
+        else:
+            self.get_logger().info("Modus: Nutze Standard-Odometrie (/odom)")
+            self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_profile_sensor_data)
+        
+        # Constants Map / Navigation
+        self.HUT_CENTER = np.array([5.0, 2.0])
         self.TARGET_RADIUS = 5.5
         self.RADIUS_TOLERANCE = 0.20 
         self.WAYPOINT_OPENING = np.array([6.5, 2.0])
         self.WAYPOINT_INSIDE = np.array([5.5, 2.0])
         
+        # Constants Control
         self.MAX_LINEAR_SPEED = 0.5
         self.MAX_ANGULAR_SPEED = 1.0
         
-        # Toleranzen für Final Alignment (Pose-basiert statt Pixel)
-        self.ALIGN_Y_TOLERANCE = 0.05  # 5cm seitlicher Versatz erlaubt
-        self.ALIGN_YAW_TOLERANCE = 0.05 # ca 3 Grad
-        self.DOCKING_DIST_TARGET = 1.9 # Meter vor der Hütte stoppen
+        # Ziel-Parameter für das Docking (Generisch)
+        self.DOCKING_TARGET_DISTANCE = 1.9 # Meter vor dem Ziel stoppen
+        self.ALIGN_Y_TOLERANCE = 0.05      # 5cm Toleranz seitlich
+        self.ALIGN_YAW_TOLERANCE = 0.05    # ca. 3 Grad Toleranz
         
-        # --- State Variables ---
-        self.state = DockingState.SEARCHING
-        self.current_odom_pose = None     # (x, y, theta) global
-        self.latest_hut_pose = None       # PoseStamped (Relativ zum Roboter)
+        # Status Variablen
+        self.current_odom_pose = None
+        self.has_localized = False
+        self.odom_received_once = False
+        
+        # Generische Pose-Variablen (statt AprilTag Detections)
+        self.latest_docking_pose = None
         self.last_pose_time = self.get_clock().now()
         
-        self.has_localized = False
-        self.odom_offset_x = 0.0
-        self.odom_offset_y = 0.0
-        self.odom_offset_theta = 0.0
-        self.raw_odom_pose = None
-
-        # --- Search logic ---
+        self.arc_direction = 1.0
+        self.current_arc_goal = None
+        
+        self.state = DockingState.SEARCHING
+        self.state_entry_time = self.get_clock().now()
+        
+        # Variablen für die 360 Grad Suche
         self.search_accumulated_yaw = 0.0
         self.last_yaw_search = None
 
-        # --- Subscribers / Publishers ---
+        # TF & Tools
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         
-        # 1. Odometrie (Global)
-        odom_topic = '/ground_truth' if self.use_ground_truth else '/odom'
-        self.create_subscription(Odometry, odom_topic, self.odom_callback, qos_profile_sensor_data)
-        
-        # 2. Die neue SCHNITTSTELLE: Relative Pose der Hütte (vom Adapter)
-        self.create_subscription(PoseStamped, '/localization/docking_pose', self.pose_callback, 10)
-        
-        # 3. Command Velocity
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        
-        # 4. State & Initial Pose
+        # Publisher
         state_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.state_pub = self.create_publisher(String, '/docking_controller/state', state_qos)
-        self.create_subscription(PoseWithCovarianceStamped, '/initialpose', self.set_initial_pose_callback, 10)
-
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        
+        # WICHTIG: Generischer Subscriber statt AprilTagDetectionArray
+        self.pose_sub = self.create_subscription(
+            PoseStamped, 
+            '/localization/docking_pose', 
+            self.pose_callback, 
+            10)
+       
         self.control_timer = self.create_timer(0.1, self.control_loop)
-        self.get_logger().info("GENERIC DOCKING CONTROLLER GESTARTET")
+        
+        self._docking_drive_active = False
+        
+        self.create_subscription(PoseWithCovarianceStamped, '/initialpose', self.set_initial_pose_callback, 10)
+        
+        self.get_logger().info("GENERIC DOCKING CONTROLLER GESTARTET (PCL & AprilTag kompatibel)")
 
+    def log_debug(self, msg):
+        self.get_logger().info(msg, throttle_duration_sec=1.0)
+
+    def ground_truth_callback(self, msg: Odometry):
+        pos = msg.pose.pose.position
+        orient = msg.pose.pose.orientation
+        _, _, yaw = euler_from_quaternion([orient.x, orient.y, orient.z, orient.w])
+        
+        # Update Raw Pose für Offset-Berechnung
+        self.raw_odom_pose = (pos.x, pos.y, yaw)
+        
+        self.current_odom_pose = (pos.x, pos.y, yaw)
+        if not self.odom_received_once: self.odom_received_once = True
+    
     def normalize_angle(self, angle):
         return (angle + math.pi) % (2 * math.pi) - math.pi
 
-    def pose_callback(self, msg: PoseStamped):
-        """Empfängt die relative Pose der Hütte (robot/chassis -> docking_frame)"""
-        self.latest_hut_pose = msg
-        self.last_pose_time = self.get_clock().now()
-        
-        # Wenn wir suchen, haben wir es jetzt gefunden!
-        if self.state == DockingState.SEARCHING:
-            self.publish_twist(0.0, 0.0)
-            self.get_logger().info("Ziel erkannt! Wechsle zu LOCALIZING.")
-            self.change_state(DockingState.LOCALIZING)
-
-    def odom_callback(self, msg: Odometry):
-        pos = msg.pose.pose.position
-        orient = msg.pose.pose.orientation
-        _, _, raw_yaw = euler_from_quaternion([orient.x, orient.y, orient.z, orient.w])
-        self.raw_odom_pose = (pos.x, pos.y, raw_yaw)
-        
-        # Offset anwenden
-        eff_x = pos.x + self.odom_offset_x
-        eff_y = pos.y + self.odom_offset_y
-        eff_yaw = self.normalize_angle(raw_yaw + self.odom_offset_theta)
-        self.current_odom_pose = (eff_x, eff_y, eff_yaw)
-
     def set_initial_pose_callback(self, msg):
         if self.raw_odom_pose is None: return
-        # Setze Offset basierend auf Rviz "2D Pose Estimate"
+        
         target_x = msg.pose.pose.position.x
         target_y = msg.pose.pose.position.y
         q = msg.pose.pose.orientation
         _, _, target_theta = euler_from_quaternion([q.x, q.y, q.z, q.w])
         
         raw_x, raw_y, raw_theta = self.raw_odom_pose
+        
         self.odom_offset_x = target_x - raw_x
         self.odom_offset_y = target_y - raw_y
         self.odom_offset_theta = self.normalize_angle(target_theta - raw_theta)
         
+        # Reset State
         self.change_state(DockingState.SEARCHING)
         self.has_localized = False
+        self.latest_docking_pose = None
+        self.current_arc_goal = None
+        
+        # Reset Search Vars
         self.search_accumulated_yaw = 0.0
         self.last_yaw_search = None
-        self.get_logger().info("RESET: State -> SEARCHING")
+        
+        self.publish_twist(0.0, 0.0)
+        self.get_logger().info(f"⚠️ RESET: State -> SEARCHING. Start Rotation Check.")
 
-    def change_state(self, new_state):
+    def odom_callback(self, msg: Odometry):
+        pos = msg.pose.pose.position
+        orient = msg.pose.pose.orientation
+        _, _, raw_yaw = euler_from_quaternion([orient.x, orient.y, orient.z, orient.w])
+        
+        self.raw_odom_pose = (pos.x, pos.y, raw_yaw)
+        
+        eff_x = pos.x + self.odom_offset_x
+        eff_y = pos.y + self.odom_offset_y
+        eff_yaw = self.normalize_angle(raw_yaw + self.odom_offset_theta)
+        
+        self.current_odom_pose = (eff_x, eff_y, eff_yaw)
+        if not self.odom_received_once: self.odom_received_once = True
+
+    def change_state(self, new_state: DockingState):
         self.state = new_state
-        self.state_pub.publish(String(data=self.state.name))
-        self.get_logger().info(f"STATE: {self.state.name}")
+        self.state_entry_time = self.get_clock().now()
+        
+        # Reset search specific vars if we leave searching
+        if new_state != DockingState.SEARCHING:
+            self.search_accumulated_yaw = 0.0
+            self.last_yaw_search = None
+            
+        state_msg = String()
+        state_msg.data = self.state.name
+        self.state_pub.publish(state_msg)
+        self.get_logger().info(f"STATE CHANGE: -> {new_state.name}")
+
+    # --- NEUER CALLBACK FÜR GENERISCHE POSE ---
+    def pose_callback(self, msg: PoseStamped):
+        """
+        Empfängt die relative Pose der Hütte (vom Roboter aus gesehen).
+        Funktioniert sowohl für AprilTag als auch für PCL Adapter.
+        """
+        self.latest_docking_pose = msg
+        self.last_pose_time = self.get_clock().now()
+        
+        # Wenn wir im Suchmodus sind und eine Pose empfangen, haben wir das Ziel gefunden
+        if self.state == DockingState.SEARCHING:
+            self.publish_twist(0.0, 0.0)
+            self.get_logger().info("Ziel erkannt (Pose empfangen)! Wechsle zu LOCALIZING.")
+            self.change_state(DockingState.LOCALIZING)
+            
+        # Wenn wir im Localizing Modus sind
+        if self.state == DockingState.LOCALIZING:
+            if self.current_odom_pose is not None and not self.has_localized:
+                self.has_localized = True
+                self.change_state(DockingState.GOTO_RADIUS_POINT)
+
+    def calculate_radius_entry_point(self, current_pos):
+        vec_to_center = self.HUT_CENTER - current_pos
+        dist_to_center = np.linalg.norm(vec_to_center)
+        if dist_to_center < 0.01: return current_pos
+        unit_vec = vec_to_center / dist_to_center
+        target_point = self.HUT_CENTER - (unit_vec * self.TARGET_RADIUS)
+        return target_point
 
     def is_pose_fresh(self, timeout=1.0):
-        if self.latest_hut_pose is None: return False
-        delay = (self.get_clock().now() - rclpy.time.Time.from_msg(self.latest_hut_pose.header.stamp)).nanoseconds / 1e9
-        return delay < timeout
+        """Prüft, ob die letzte Pose aktuell genug ist."""
+        if self.latest_docking_pose is None:
+            return False
+        age = (self.get_clock().now() - rclpy.time.Time.from_msg(self.latest_docking_pose.header.stamp)).nanoseconds / 1e9
+        return age < timeout
 
     def control_loop(self):
-        if self.current_odom_pose is None: return
+        if self.current_odom_pose is None: 
+            return
+        
         cx, cy, ctheta = self.current_odom_pose
+        current_pos_vec = np.array([cx, cy])
+        
+        self.log_debug(f"[{self.state.name}] Pose: x={cx:.1f}, y={cy:.1f}, th={ctheta:.2f}")
         
         # --- 1. SEARCHING (Rotation) ---
         if self.state == DockingState.SEARCHING:
+            # Yaw Unterschied berechnen
             if self.last_yaw_search is not None:
                 delta = abs(self.normalize_angle(ctheta - self.last_yaw_search))
                 self.search_accumulated_yaw += delta
+            
             self.last_yaw_search = ctheta
             
+            # Check ob 360 Grad (2*PI = 6.28) überschritten
             if self.search_accumulated_yaw > 6.4:
+                self.get_logger().warn("TIMEOUT: 360 Grad gedreht, kein Ziel gefunden.")
                 self.publish_twist(0.0, 0.0)
                 self.change_state(DockingState.SEARCH_TIMEOUT)
                 return
-            self.publish_twist(0.0, 0.3)
+
+            self.publish_twist(0.0, 0.3) # Langsam drehen
             return
-
-        if self.state == DockingState.SEARCH_TIMEOUT: return
-
-        # --- 2. LOCALIZING (Map Correction) ---
+        
+        if self.state == DockingState.SEARCH_TIMEOUT:
+            self.publish_twist(0.0, 0.0)
+            return
+        
         if self.state == DockingState.LOCALIZING:
-            # Hier könnten wir die Odometrie korrigieren, indem wir die bekannte Hütte (Global) 
-            # mit der gemessenen relativen Pose vergleichen.
-            # Fürs erste skippen wir komplexe Map-Korrektur und fahren einfach los.
-            self.has_localized = True
-            self.change_state(DockingState.GOTO_RADIUS_POINT)
+            self.publish_twist(0.0, 0.0)
+            # Der Zustandswechsel passiert jetzt im pose_callback
             return
-
-        # --- 3. GLOBAL NAVIGATION (Arc Approach) ---
-        if self.state in [DockingState.GOTO_RADIUS_POINT, DockingState.FOLLOW_ARC]:
-            # ... (Identisch zum alten Code, nutzt globale Odometrie) ...
-            # Verkürzt für Übersichtlichkeit:
-            target = self.calculate_nav_target(cx, cy) # Hilfsfunktion
-            if target is not None:
-                self.simple_go_to(target)
+        
+        # --- 2. GLOBAL APPROACH (Odometry based) ---
+        if self.state == DockingState.GOTO_RADIUS_POINT:
+            target_point = self.calculate_radius_entry_point(current_pos_vec)
+            # Wenn wir da sind, wechseln wir zum Bogen
+            if self.simple_go_to(target_point, tolerance=self.RADIUS_TOLERANCE):
+                opening_angle = math.atan2(self.WAYPOINT_OPENING[1] - self.HUT_CENTER[1], 
+                                           self.WAYPOINT_OPENING[0] - self.HUT_CENTER[0])
+                current_angle = math.atan2(cy - self.HUT_CENTER[1], cx - self.HUT_CENTER[0])
+                angle_diff = self.normalize_angle(opening_angle - current_angle)
+                self.arc_direction = 1.0 if angle_diff > 0 else -1.0
+                self.change_state(DockingState.FOLLOW_ARC)
             return
+            
+        if self.state == DockingState.FOLLOW_ARC:
+            current_angle = math.atan2(cy - self.HUT_CENTER[1], cx - self.HUT_CENTER[0])
+            opening_angle = math.atan2(self.WAYPOINT_OPENING[1] - self.HUT_CENTER[1], 
+                                       self.WAYPOINT_OPENING[0] - self.HUT_CENTER[0])
+            angle_err = self.normalize_angle(opening_angle - current_angle)
+            
+            if abs(angle_err) < 0.1:
+                self.publish_twist(0.0, 0.0)
+                self.current_arc_goal = None
+                self.change_state(DockingState.ALIGN_TO_HUT)
+                return
 
-        # --- 4. ALIGN TO HUT (Global alignment before tracking) ---
+            step_angle = 0.8 / self.TARGET_RADIUS
+            next_angle = current_angle + (self.arc_direction * step_angle)
+            gx = self.HUT_CENTER[0] + self.TARGET_RADIUS * math.cos(next_angle)
+            gy = self.HUT_CENTER[1] + self.TARGET_RADIUS * math.sin(next_angle)
+            self.current_arc_goal = np.array([gx, gy])
+            self.simple_go_to(self.current_arc_goal, tolerance=0.2)
+            return
+            
         if self.state == DockingState.ALIGN_TO_HUT:
+            # Grobe Ausrichtung mittels Odometrie
             target_theta = math.atan2(self.WAYPOINT_INSIDE[1] - cy, self.WAYPOINT_INSIDE[0] - cx)
             angle_err = self.normalize_angle(target_theta - ctheta)
+            
             if abs(angle_err) < 0.05:
                 self.change_state(DockingState.FINAL_ALIGNMENT)
                 self.publish_twist(0.0, 0.0)
             else:
-                self.publish_twist(0.0, np.clip(1.5 * angle_err, -0.5, 0.5))
+                ang_vel = np.clip(1.5 * angle_err, -0.5, 0.5)
+                self.publish_twist(0.0, ang_vel)
             return
-
-        # --- 5. FINAL ALIGNMENT (Visual Servoing via Pose) ---
+            
+        
+            
+        # --- 3. FINAL ALIGNMENT (HIER WAR DER FEHLER) ---
         if self.state == DockingState.FINAL_ALIGNMENT:
             if not self.is_pose_fresh(timeout=1.0):
-                self.publish_twist(0.0, 0.0) # Wait for data
+                self.publish_twist(0.0, 0.0)
+                self.get_logger().warn("Warte auf Pose...", throttle_duration_sec=2.0)
                 return
             
-            # Pose ist im Frame 'robot/chassis'. 
-            # y > 0 -> Hütte ist links -> Roboter muss nach links drehen
-            y_error = self.latest_hut_pose.pose.position.y
-            
-            # Yaw Error aus Quaternions der relativen Pose
-            q = self.latest_hut_pose.pose.orientation
+            y_error = self.latest_docking_pose.pose.position.y
+            q = self.latest_docking_pose.pose.orientation
             _, _, yaw_error = euler_from_quaternion([q.x, q.y, q.z, q.w])
             
-            # Wir wollen y=0 und yaw=0 (gerade vor der Hütte)
-            if abs(y_error) < self.ALIGN_Y_TOLERANCE and abs(yaw_error) < self.ALIGN_YAW_TOLERANCE:
+            # Debugging
+            self.log_debug(f"ALIGN: Y_err={y_error:.3f}, Yaw_err={yaw_error:.3f}")
+
+            # FIX 1: Toleranz für Y deutlich erhöht (auf 15cm), da wir das während der Fahrt korrigieren
+            if abs(y_error) < 0.20 and abs(yaw_error) < 0.05:
                 self.change_state(DockingState.DOCKING)
                 self.publish_twist(0.0, 0.0)
+                self.get_logger().info("Ausrichtung OK. Beginne DOCKING.")
             else:
-                # Einfacher P-Regler auf den Winkel, mit Y-Einfluss
-                # Wenn Y Error da ist, drehe etwas, um ihn zu korrigieren
-                ang_vel = 1.5 * yaw_error + 2.0 * y_error
-                self.publish_twist(0.0, np.clip(ang_vel, -0.4, 0.4))
+                # FIX 2: Nur Winkel korrigieren! 
+                # Wir ignorieren y_error hier absichtlich, um "Zappeln" zu verhindern.
+                # y_error korrigieren wir gleich im DOCKING-State durch Kurvenfahrt.
+                ang_vel = 1.0 * yaw_error 
+                ang_vel = np.clip(ang_vel, -0.4, 0.4)
+                self.publish_twist(0.0, ang_vel)
             return
-
-        # --- 6. DOCKING (Drive Forward) ---
+            
+        # --- 4. DOCKING (HIER KORRIGIEREN WIR Y) ---
         if self.state == DockingState.DOCKING:
-            if not self.is_pose_fresh(timeout=2.0):
-                # Blind weiterfahren oder stoppen? Stoppen.
+            if not self.is_pose_fresh(timeout=1.0):
                 self.publish_twist(0.0, 0.0)
                 return
 
-            # Distanz ist x
-            dist_error = self.latest_hut_pose.pose.position.x - self.DOCKING_DIST_TARGET
-            y_error = self.latest_hut_pose.pose.position.y
+            current_dist = self.latest_docking_pose.pose.position.x
+            dist_error = current_dist - self.DOCKING_TARGET_DISTANCE
+            y_error = self.latest_docking_pose.pose.position.y # Seitlicher Versatz
 
             if abs(dist_error) < 0.1:
                 self.change_state(DockingState.FINAL_STOP)
                 self.publish_twist(0.0, 0.0)
+                self.get_logger().info("ZIEL ERREICHT: Final Stop.")
             else:
+                # Langsam vorfahren
                 lin = np.clip(0.3 * dist_error, -0.15, 0.15)
-                ang = np.clip(2.0 * y_error, -0.3, 0.3) # Feinkorrektur
+                
+                # Aggressive Korrektur des seitlichen Versatzes WÄHREND der Fahrt
+                # Wenn y > 0 (links), drehen wir nach links (pos), um darauf zuzufahren
+                ang = np.clip(3.0 * y_error, -0.5, 0.5) 
+                
                 self.publish_twist(lin, ang)
             return
 
         if self.state == DockingState.FINAL_STOP:
             self.publish_twist(0.0, 0.0)
-
-    def calculate_nav_target(self, cx, cy):
-        # Logik für GOTO_RADIUS und FOLLOW_ARC (vereinfacht aus deinem Code kopieren)
-        # Hier nur Placeholder Logik:
-        if self.state == DockingState.GOTO_RADIUS_POINT:
-             # ... Logik ...
-             self.change_state(DockingState.ALIGN_TO_HUT) # Skip ARC for simplicity in this snippet
-        return None
 
     def simple_go_to(self, target_pos, tolerance):
         if self.current_odom_pose is None: return False
@@ -259,10 +373,10 @@ class DockingController(Node):
         self.publish_twist(lin_vel, ang_vel)
         return False
 
-    def publish_twist(self, lin, ang):
+    def publish_twist(self, linear, angular):
         cmd = Twist()
-        cmd.linear.x = float(lin)
-        cmd.angular.z = float(ang)
+        cmd.linear.x = float(linear)
+        cmd.angular.z = float(angular)
         self.cmd_vel_pub.publish(cmd)
 
 def main(args=None):
