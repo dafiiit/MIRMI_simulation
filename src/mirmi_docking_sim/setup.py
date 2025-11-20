@@ -67,6 +67,8 @@ setup(
             'docking_controller = mirmi_docking_sim.docking_controller:main',
             'odom_to_tf = mirmi_docking_sim.odom_to_tf_publisher:main',
             'automated_test_runner = mirmi_docking_sim.automated_test_runner:main',
+            'apriltag_pose_publisher = mirmi_docking_sim.apriltag_pose_publisher:main',
+            'pcl_pose_publisher = mirmi_docking_sim.pcl_pose_publisher:main',
             'pcl_docking_controller = mirmi_docking_sim.pcl_docking_controller:main',
             'depth_camera_info_sync = mirmi_docking_sim.depth_camera_info_sync:main',
         ],
