@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, PointField
 from geometry_msgs.msg import Twist
 import numpy as np
 from sensor_msgs_py import point_cloud2
@@ -119,42 +119,147 @@ class PCLDockingController(Node):
             self.perform_approach()
             return
 
+    def preprocess_cloud(self, points):
+        """
+        Filters and downsamples the point cloud.
+        """
+        # 1. PassThrough Filter (Z-axis) - Remove ground and ceiling
+        # Hut is roughly at z=0 to z=1.5. Robot camera is at z=0.25.
+        # Points below z=-0.1 (relative to camera) are likely ground? 
+        # Wait, camera frame: Z is forward, X is right, Y is down (standard optical)?
+        # Or Z is up? 
+        # In Gazebo:
+        # Camera Link: X forward, Y left, Z up (standard ROS body)
+        # Camera Sensor (Optical): Z forward, X right, Y down.
+        # The static transform we set:
+        # '1.0', '0.0', '0.25', '-1.5708', '0.0', '-1.5708' (yaw=-90, roll=-90)
+        # Base (X fwd, Y left, Z up) -> Camera (Z fwd, X right, Y down)
+        # So in Camera Frame:
+        # Z is forward (depth)
+        # X is right
+        # Y is down
+        
+        # Filter by Depth (Z in camera frame)
+        mask = (points[:, 2] > 0.5) & (points[:, 2] < 5.0)
+        points = points[mask]
+        
+        # Filter by Height (Y in camera frame)
+        # Robot is at z=0.25 (world). Ground is at z=0 (world).
+        # So ground is at -0.25 relative to robot base.
+        # In Camera frame (Y down), Y=0 is camera height.
+        # Ground is "down" (positive Y).
+        # Camera is at 0.25m height. Ground is at +0.25m in Y direction?
+        # Let's verify:
+        # World Z=0 -> Robot Z=-0.25 -> Camera Y=+0.25?
+        # Yes, if Y is down.
+        # So points with Y > 0.20 are likely ground.
+        mask_y = points[:, 1] < 0.20 
+        points = points[mask_y]
+        
+        # VoxelGrid Downsampling (Simplified: Random Choice)
+        # Proper VoxelGrid is hard in pure numpy without libraries like Open3D
+        # We'll stick to random downsampling for now, but make it aggressive
+        if len(points) > 1000:
+            idx = np.random.choice(len(points), 1000, replace=False)
+            points = points[idx]
+            
+        return points
+
     def perform_registration(self):
         if self.latest_pc_msg is None: return
         
         # Convert ROS PointCloud2 to numpy
-        # We only care about x, y, z
         gen = point_cloud2.read_points(self.latest_pc_msg, field_names=("x", "y", "z"), skip_nans=True)
-        raw_points = np.array(list(gen)) # This creates a structured array
-        # Extract columns explicitly to ensure (N, 3) float32 array
+        raw_points = np.array(list(gen))
+        if len(raw_points) == 0: return
+        
         scene_points = np.column_stack((raw_points['x'], raw_points['y'], raw_points['z']))
         
+        # Preprocessing
+        scene_points = self.preprocess_cloud(scene_points)
+        
         if len(scene_points) < 100:
-            self.get_logger().warn("Not enough points in cloud.")
+            self.get_logger().warn("Not enough points after preprocessing.")
             return
 
-        # Downsample scene cloud for speed (simple random sampling)
-        if len(scene_points) > 1000:
-            idx = np.random.choice(len(scene_points), 1000, replace=False)
-            scene_points = scene_points[idx]
-
+        # Coarse Registration (Centroid Alignment)
+        # Align centroids to get initial translation
+        centroid_src = np.mean(scene_points, axis=0)
+        centroid_dst = np.mean(self.reference_cloud, axis=0)
+        translation_init = centroid_dst - centroid_src
+        
+        # Initial Transform (Translation only)
+        T_init = np.eye(4)
+        T_init[:3, 3] = translation_init
+        
+        # Apply initial transform to scene points for ICP
+        # Note: ICP function expects source and target.
+        # We want T that maps Scene -> Reference
+        # So Source = Scene, Target = Reference
+        
         # Run ICP
-        # We want to align scene_points (Source) to self.reference_cloud (Target)
-        # T * Source = Target
-        # T is the transform from Camera Frame to Hut Frame
+        # We pass the original scene points and let ICP handle the transformation accumulation
+        # But giving it a good start helps.
+        # Let's pass T_init as init_pose
         
-        T, distances, iterations = self.icp(scene_points, self.reference_cloud, max_iterations=20, tolerance=0.001)
+        T_fine, distances, iterations = self.icp(scene_points, self.reference_cloud, init_pose=T_init, max_iterations=30, tolerance=0.0001)
         
-        # Calculate fitness (mean squared error)
+        # Combine transforms: T_total = T_fine * T_init?
+        # My ICP implementation returns the TOTAL transformation if init_pose is applied inside?
+        # Let's check self.icp implementation...
+        # It applies init_pose to src, then calculates best_fit from original A (with init_pose applied? No) to final.
+        # Wait, my ICP implementation in previous turn:
+        # src = dot(init_pose, src)
+        # ... loop ...
+        # T, _, _ = self.best_fit_transform(A, src) -> This calculates T from A (original) to src (final)
+        # So T_fine is indeed the total transformation from Scene (raw) to Reference.
+        
         fitness = np.mean(distances)
         self.get_logger().info(f"ICP converged in {iterations} iterations. Fitness: {fitness:.4f}")
         
-        if fitness < 0.05: # Threshold for good match
-            self.current_pose_estimate = T
+        # Visualization
+        self.publish_debug_cloud(self.reference_cloud, np.linalg.inv(T_fine)) 
+        # Why inverse? 
+        # T_fine maps Scene (Camera Frame) -> Reference (Hut Frame)
+        # We want to visualize Reference Cloud in Camera Frame (to show alignment)
+        # So we need T_hut_cam = T_fine^-1
+        # Points_cam = T_fine^-1 * Points_ref
+        
+        if fitness < 0.02: # Stricter threshold
+            self.current_pose_estimate = T_fine
             self.state = DockingState.APPROACHING
             self.get_logger().info("Registration successful! Switching to APPROACHING.")
         else:
             self.get_logger().warn(f"Registration poor (fitness {fitness:.4f}). Retrying...")
+
+    def publish_debug_cloud(self, points, transform):
+        """
+        Publishes the reference cloud transformed into the camera frame.
+        """
+        # Apply transform
+        points_h = np.ones((points.shape[0], 4))
+        points_h[:, 0:3] = points
+        points_transformed = np.dot(transform, points_h.T).T
+        points_xyz = points_transformed[:, 0:3]
+        
+        # Create PointCloud2 message
+        header = self.latest_pc_msg.header # Use same header/frame as input
+        
+        # Create structured array for point_cloud2.create_cloud
+        # We need fields x, y, z
+        dtype = [('x', np.float32), ('y', np.float32), ('z', np.float32)]
+        structured_points = np.zeros(points_xyz.shape[0], dtype=dtype)
+        structured_points['x'] = points_xyz[:, 0]
+        structured_points['y'] = points_xyz[:, 1]
+        structured_points['z'] = points_xyz[:, 2]
+        
+        pc_msg = point_cloud2.create_cloud(header, [
+            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        ], structured_points)
+        
+        self.debug_pc_pub.publish(pc_msg)
 
     def best_fit_transform(self, A, B):
         '''
