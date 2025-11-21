@@ -61,6 +61,12 @@ class PCLPosePublisher(Node):
                 y_val = center[1] - half_size[1] if center[1] > 0 else center[1] + half_size[1] # Inner face
                 for x, z in zip(x_grid.flatten(), z_grid.flatten()):
                     points.append([x, y_val, z])
+            # Roof
+            elif size[2] < 0.5:
+                x_grid, y_grid = np.meshgrid(x_range, y_range)
+                z_val = center[2] - half_size[2] # Inner face (bottom of roof)
+                for x, y in zip(x_grid.flatten(), y_grid.flatten()):
+                    points.append([x, y, z_val])
             
         # Dimensions from SDF
         # Back wall: -1.45, 0, 0.75; size 0.1, 2.2, 1.5
@@ -71,6 +77,10 @@ class PCLPosePublisher(Node):
         
         # Right wall: 0, -1.05, 0.75; size 3.0, 0.1, 1.5
         add_box(np.array([0, -1.05, 0.75]), np.array([3.0, 0.1, 1.5]))
+        
+        # Roof: 0, 0, 1.55; size 3.0, 2.2, 0.1
+        # Inner face at 1.5
+        add_box(np.array([0, 0, 1.55]), np.array([3.0, 2.2, 0.1]))
         
         return np.array(points, dtype=np.float32)
 

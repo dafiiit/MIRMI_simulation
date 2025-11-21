@@ -98,6 +98,9 @@ class PCLDockingController(Node):
         
         # Right wall: 0, -1.05, 0.75; size 3.0, 0.1, 1.5
         add_box(np.array([0, -1.05, 0.75]), np.array([3.0, 0.1, 1.5]))
+
+        # Top roof: 0, 0, 1.5; size 3.0, 2.2, 0.1
+        add_box(np.array([0, 0, 1.5]), np.array([3.0, 2.2, 0.1]))
         
         return np.array(points, dtype=np.float32)
 
