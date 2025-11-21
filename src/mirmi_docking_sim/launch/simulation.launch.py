@@ -3,6 +3,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, SetEnvironmentVariable, DeclareLaunchArgument 
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_xml.launch_description_sources import XMLLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression, PathJoinSubstitution
 from launch.conditions import IfCondition
 from launch_ros.actions import Node, ComposableNodeContainer
@@ -175,7 +176,7 @@ def generate_launch_description():
 
     # Foxglove Bridge
     foxglove_bridge = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
+        XMLLaunchDescriptionSource(
             PathJoinSubstitution([
                 FindPackageShare('foxglove_bridge'),
                 'launch',
