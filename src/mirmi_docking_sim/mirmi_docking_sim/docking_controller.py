@@ -359,7 +359,8 @@ class DockingController(Node):
                                        self.WAYPOINT_OPENING[0] - self.HUT_CENTER[0])
             angle_err = self.normalize_angle(opening_angle - current_angle)
             
-            if abs(angle_err) < 0.1:
+            # Tightened tolerance to 0.02 rad (~1 deg) to ensure we are really at the center line
+            if abs(angle_err) < 0.02:
                 self.publish_twist(0.0, 0.0)
                 self.current_arc_goal = None
                 self.change_state(DockingState.ALIGN_TO_HUT)
@@ -382,7 +383,8 @@ class DockingController(Node):
                 self.change_state(DockingState.FINAL_ALIGNMENT)
                 self.publish_twist(0.0, 0.0)
             else:
-                ang_vel = np.clip(1.5 * angle_err, -0.5, 0.5)
+                # Reduced gain to 0.8 to avoid oscillations
+                ang_vel = np.clip(0.8 * angle_err, -0.4, 0.4)
                 self.publish_twist(0.0, ang_vel)
             return
             
@@ -436,8 +438,8 @@ class DockingController(Node):
                 self.publish_twist(0.0, 0.0)
                 self.get_logger().info("ZIEL ERREICHT: Final Stop.")
             else:
-                # Langsam vorfahren
-                lin = np.clip(0.3 * dist_error, -0.15, 0.15)
+                # Langsam vorfahren - Increased speed
+                lin = np.clip(0.5 * dist_error, -0.3, 0.3)
                 
                 # Aggressive Korrektur des seitlichen Versatzes WÄHREND der Fahrt
                 # Wenn y > 0 (links), drehen wir nach links (pos), um darauf zuzufahren?
