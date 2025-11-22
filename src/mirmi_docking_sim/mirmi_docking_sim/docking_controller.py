@@ -408,8 +408,8 @@ class DockingController(Node):
             # Debugging
             self.log_debug(f"ALIGN: Y_err={y_error:.3f}, Yaw_err={yaw_error:.3f}")
 
-            # FIX 1: Toleranz für Y deutlich erhöht (auf 15cm), da wir das während der Fahrt korrigieren
-            if abs(y_error) < 0.30 and abs(yaw_error) < 0.1:
+            # FIX 1: Toleranz für Y deutlich erhöht (auf 3.0m), da wir das während der Fahrt korrigieren
+            if abs(y_error) < 3.0 and abs(yaw_error) < 0.1:
                 self.change_state(DockingState.DOCKING)
                 self.publish_twist(0.0, 0.0)
                 self.get_logger().info("Ausrichtung OK. Beginne DOCKING.")
@@ -451,6 +451,7 @@ class DockingController(Node):
                 # Also: y > 0 -> ang > 0.
                 
                 ang = np.clip(2.0 * y_error, -0.5, 0.5) 
+                self.log_debug(f"DOCKING: Dist={dist_error:.2f}, Y_err={y_error:.2f} -> AngCmd={ang:.2f}") 
                 
                 # Collision Check
                 if self.check_collision(lin, ang):
