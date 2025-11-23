@@ -354,9 +354,9 @@ class DockingController(Node):
             return
             
         if self.state == DockingState.FOLLOW_ARC:
-            # Check distance to target point (10.5, 2.0)
-            # We use the "center between wheels" which is approximately the robot's position (cx, cy)
-            dist_to_target = math.sqrt((cx - 10.5)**2 + (cy - 2.0)**2)
+            # Check distance to target axis (0,5)
+            # We use the "center between wheels" which is approximately the robot's position ( cy)
+            dist_to_target = math.sqrt((cy - 0.5)**2)
             
             # Restore current_angle calculation needed for next_angle
             current_angle = math.atan2(cy - self.HUT_CENTER[1], cx - self.HUT_CENTER[0])
