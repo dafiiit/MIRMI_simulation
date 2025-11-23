@@ -137,9 +137,14 @@ class PCLPosePublisher(Node):
         # 4. ICP
         # Returns T that maps Scene -> Reference (Camera Frame -> Hut Frame)
         # So T = T_hut_cam
-        T_hut_cam, distances, iterations = self.icp(scene_points, self.reference_cloud, init_pose=T_init)
+        # 4. ICP
+        # Returns T that maps Scene -> Reference (Camera Frame -> Hut Frame)
+        # So T = T_hut_cam
+        # max_correspondence_distance=0.5 means points > 50cm away from model are ignored.
+        T_hut_cam, fitness, iterations = self.icp(scene_points, self.reference_cloud, init_pose=T_init, max_correspondence_distance=0.5)
         
-        fitness = np.mean(distances)
+        # fitness is now a float (mean error of inliers)
+        # fitness = np.mean(distances) # Old way
         if fitness > 0.05: # Threshold
             self.get_logger().warn(f"ICP fitness poor: {fitness:.4f} (Iter: {iterations})")
             # If tracking failed, reset it to force Centroid Alignment next time?
@@ -252,7 +257,7 @@ class PCLPosePublisher(Node):
             
         return distances, indices
 
-    def icp(self, A, B, init_pose=None, max_iterations=20, tolerance=0.001):
+    def icp(self, A, B, init_pose=None, max_iterations=20, tolerance=0.001, max_correspondence_distance=0.5):
         '''
         The Iterative Closest Point method: aligns source A to target B
         '''
@@ -271,8 +276,19 @@ class PCLPosePublisher(Node):
             # find the nearest neighbors between the current source and destination points
             distances, indices = self.nearest_neighbor(src, dst)
 
+            # Outlier Rejection: Filter correspondences that are too far
+            valid_mask = distances < max_correspondence_distance
+            
+            # Check if we have enough points to continue
+            if np.sum(valid_mask) < 10:
+                # self.get_logger().warn("ICP lost too many points during outlier rejection.")
+                break
+
+            src_valid = src[valid_mask]
+            dst_valid = dst[indices[valid_mask]]
+
             # compute the transformation between the current source and nearest destination points
-            T, _, _ = self.best_fit_transform(src, dst[indices])
+            T, _, _ = self.best_fit_transform(src_valid, dst_valid)
 
             # update the current source
             src_h = np.ones((src.shape[0], 4))
@@ -280,16 +296,34 @@ class PCLPosePublisher(Node):
             src_h = np.dot(T, src_h.T).T
             src = src_h[:,0:3]
 
-            # check error
-            mean_error = np.mean(distances)
+            # check error (only on valid points)
+            mean_error = np.mean(distances[valid_mask])
             if np.abs(prev_error - mean_error) < tolerance:
                 break
             prev_error = mean_error
 
         # calculate final transformation
+        # We should probably recalculate T one last time on the final valid set or just use the accumulated T?
+        # The standard way is to return the transformation that aligns A to the final src.
+        # But wait, 'src' has been transformed in place.
+        # So we find T that maps A to src.
+        
+        # Refine: Use only inliers for the final transform calculation? 
+        # Actually, 'src' is already the transformed version of A. 
+        # So we just find the best fit from A to src.
+        # BUT, if we want the fitness to reflect the inliers, we should be careful.
+        
+        # Let's re-calculate distances for the final pose to get the true fitness
+        distances, indices = self.nearest_neighbor(src, dst)
+        valid_mask = distances < max_correspondence_distance
+        if np.sum(valid_mask) > 0:
+             final_fitness = np.mean(distances[valid_mask])
+        else:
+             final_fitness = 100.0 # Bad fitness
+
         T, _, _ = self.best_fit_transform(A, src)
         
-        return T, distances, i
+        return T, final_fitness, i
 
 def main(args=None):
     rclpy.init(args=args)
