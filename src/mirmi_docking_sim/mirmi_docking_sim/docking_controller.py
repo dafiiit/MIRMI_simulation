@@ -354,9 +354,20 @@ class DockingController(Node):
             return
             
         if self.state == DockingState.FOLLOW_ARC:
+<<<<<<< Updated upstream
             # Check distance to target axis (0,5)
             # We use the "center between wheels" which is approximately the robot's position ( cy)
             dist_to_target = math.sqrt((cy - 0.5)**2)
+=======
+            # Check distance to target point (10.5, 2.0)
+            # We use the "center between wheels" which is approximately the robot's position (cx, cy)
+            if cx > 5:
+                dist_to_target = abs(cy)
+            else:
+                dist_to_target = 10     # einfach eine Zahl > unsere toleranz
+            print("aktuelle position x: ", cx)
+            print("aktuelle position y: ", cy)
+>>>>>>> Stashed changes
             
             # Restore current_angle calculation needed for next_angle
             current_angle = math.atan2(cy - self.HUT_CENTER[1], cx - self.HUT_CENTER[0])
