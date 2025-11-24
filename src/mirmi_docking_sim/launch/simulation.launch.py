@@ -9,6 +9,7 @@ from launch.conditions import IfCondition
 from launch_ros.actions import Node, ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 from launch_ros.substitutions import FindPackageShare
+import xacro
 
 def generate_launch_description():
 
@@ -16,6 +17,7 @@ def generate_launch_description():
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
 
     models_path = os.path.join(pkg_mirmi_docking_sim, 'models')
+    urdf_path = os.path.join(pkg_mirmi_docking_sim, 'urdf', 'robot.urdf.xacro')
     world_path = os.path.join(pkg_mirmi_docking_sim, 'worlds', 'docking_world.sdf')
     bridge_config_path = os.path.join(pkg_mirmi_docking_sim, 'config', 'bridge.yaml')
     
@@ -57,6 +59,29 @@ def generate_launch_description():
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=['--ros-args', '-p', f'config_file:={bridge_config_path}'],
+        output='screen'
+    )
+
+    # 3. Robot State Publisher (URDF)
+    doc = xacro.process_file(urdf_path)
+    robot_desc = doc.toxml()
+    
+    robot_state_publisher = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        output='both',
+        parameters=[{'robot_description': robot_desc}],
+    )
+
+    # 4. Spawn Robot in Gazebo
+    spawn_robot = Node(
+        package='ros_gz_sim',
+        executable='create',
+        arguments=['-string', robot_desc,
+                   '-name', 'robot',
+                   '-x', '0', '-y', '0', '-z', '0.5',
+                   '-R', '0', '-P', '0', '-Y', '0'],
         output='screen'
     )
     
@@ -191,6 +216,8 @@ def generate_launch_description():
         set_env,
         gz_sim,
         gz_bridge,
+        robot_state_publisher,
+        spawn_robot,
         odom_tf_node,
         static_rgb_camera_tf,
         static_depth_camera_tf,

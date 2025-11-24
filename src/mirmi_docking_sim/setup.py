@@ -21,6 +21,9 @@ setup(
         # Konfig-Dateien installieren
         (os.path.join('share', package_name, 'config'), 
             glob(os.path.join('config', '*.yaml'))),
+        # URDF-Dateien installieren
+        (os.path.join('share', package_name, 'urdf'), 
+            glob(os.path.join('urdf', '*.xacro'))),
         # Modell-Dateien installieren (rekursiv)
         (os.path.join('share', package_name, 'models', 'robot'), 
             glob(os.path.join('models', 'robot', '*'))),
