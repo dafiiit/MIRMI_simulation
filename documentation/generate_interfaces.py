@@ -31,7 +31,10 @@ NODE_ALIASES = {
     'DockingController': 'docking_controller',
     'AprilTagVisualizer': 'apriltag_visualizer',
     'OdomToTFPublisher': 'odom_to_tf_publisher',
-    'DockingTestRunner': 'automated_test_runner'
+    'DockingTestRunner': 'automated_test_runner',
+    'AprilTagPosePublisher': 'apriltag_pose_publisher',
+    'PCLPosePublisher': 'pcl_pose_publisher',
+    'DepthCameraInfoSync': 'depth_camera_info_sync'
 }
 
 # --- 3. PATTERNS (Jetzt mit TF und Actions) ---

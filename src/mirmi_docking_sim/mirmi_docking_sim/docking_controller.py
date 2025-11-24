@@ -442,13 +442,13 @@ class DockingController(Node):
                 # Langsam vorfahren - Increased speed
                 lin = np.clip(0.5 * dist_error, -0.3, 0.3)
                 
-                # Aggressive Korrektur des seitlichen Versatzes WÄHREND der Fahrt
-                # Wenn y > 0 (links), drehen wir nach links (pos), um darauf zuzufahren?
-                # NEIN! Wenn y > 0 (links vom Ziel), müssen wir nach RECHTS drehen (negativ), um zur Mitte zu kommen?
+                # Korrektur des seitlichen Versatzes WÄHREND der Fahrt funktioniert absolut überhaupt nicht. 
+                # wenn er zu weit links ist muss er so weit nach RECHTS lenken (negativ), dass der Apriltag eher links im Bildschirm ist, bis er den y Versatz ausgeglichen hat. 
                 # Moment: y_error ist Position der Hütte im Roboter Frame.
                 # Wenn Hütte bei Y = +0.5 (Links), dann müssen wir nach Links fahren.
                 # Ackermann/DiffDrive: Nach Links fahren = Nach Links drehen und vorwärts.
                 # Also: y > 0 -> ang > 0.
+                # Aktuelles Verhalten: Leider wackelt der Roboter und ist nicht in der Lage den y Versatz auszgleichen
                 
                 ang = np.clip(2.0 * y_error, -0.5, 0.5) 
                 self.log_debug(f"DOCKING: Dist={dist_error:.2f}, Y_err={y_error:.2f} -> AngCmd={ang:.2f}") 
