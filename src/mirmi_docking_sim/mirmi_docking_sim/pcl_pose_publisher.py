@@ -17,313 +17,239 @@ class PCLPosePublisher(Node):
     def __init__(self):
         super().__init__('pcl_pose_publisher')
         
-        # TF Buffer
+        # TF Buffer für Transformationen
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
+        # Abonniere Punktwolke (Depth Camera)
         self.subscription = self.create_subscription(
             PointCloud2, '/depth/points', self.pc_callback, qos_profile_sensor_data)
             
         self.publisher_ = self.create_publisher(PoseStamped, '/localization/docking_pose', 10)
         
-        # Reference Cloud Generation
-        self.reference_cloud = self.generate_reference_cloud()
-        self.reference_tree = KDTree(self.reference_cloud) # Pre-build KDTree
+        # 2D Referenzmodell (nur Grundriss)
+        self.reference_cloud = self.generate_2d_reference_cloud()
+        self.reference_tree = KDTree(self.reference_cloud)
         
-        self.last_transform = None # For tracking
+        self.last_transform = None 
         
-        self.get_logger().info('PCL Localization Node started.')
+        self.get_logger().info('PCL 2D-Localization Node started.')
 
-    def generate_reference_cloud(self):
+    def generate_2d_reference_cloud(self):
         """
-        Generates a synthetic point cloud of the hut based on model.sdf dimensions.
-        The hut frame is at the center of the floor.
+        Erstellt einen 2D-Grundriss der Hütte (U-Form) bei Z=0.
+        Basierend auf SDF Maßen.
         """
         points = []
-        density = 20 # points per meter
+        density = 30 # Punkte pro Meter für hohe Genauigkeit
         
-        # Helper to add points for a box
-        def add_box(center, size):
-            half_size = size / 2.0
-            x_range = np.linspace(center[0] - half_size[0], center[0] + half_size[0], int(size[0] * density))
-            y_range = np.linspace(center[1] - half_size[1], center[1] + half_size[1], int(size[1] * density))
-            z_range = np.linspace(center[2] - half_size[2], center[2] + half_size[2], int(size[2] * density))
-            
-            # Back Wall
-            if size[0] < 0.5: 
-                 y_grid, z_grid = np.meshgrid(y_range, z_range)
-                 x_val = center[0] + half_size[0] # Inner face
-                 for y, z in zip(y_grid.flatten(), z_grid.flatten()):
-                     points.append([x_val, y, z])
-            # Side walls
-            elif size[1] < 0.5: 
-                x_grid, z_grid = np.meshgrid(x_range, z_range)
-                y_val = center[1] - half_size[1] if center[1] > 0 else center[1] + half_size[1] # Inner face
-                for x, z in zip(x_grid.flatten(), z_grid.flatten()):
-                    points.append([x, y_val, z])
-            # Roof
-            elif size[2] < 0.5:
-                x_grid, y_grid = np.meshgrid(x_range, y_range)
-                z_val = center[2] - half_size[2] # Inner face (bottom of roof)
-                for x, y in zip(x_grid.flatten(), y_grid.flatten()):
-                    points.append([x, y, z_val])
-            
-        # Dimensions from SDF
-        # Back wall: -1.45, 0, 0.75; size 0.1, 2.2, 1.5
-        add_box(np.array([-1.45, 0, 0.75]), np.array([0.1, 2.2, 1.5]))
+        def add_line(start, end):
+            dist = np.linalg.norm(end - start)
+            steps = int(dist * density)
+            for i in range(steps + 1):
+                t = i / max(1, steps)
+                p = start + t * (end - start)
+                points.append(p)
+
+        # Maße aus der SDF (docking_world.sdf):
+        # Back wall: x=-1.45. Breite Y geht von ca. -1.1 bis +1.1
+        p_back_left = np.array([-1.45, 1.1, 0.0])
+        p_back_right = np.array([-1.45, -1.1, 0.0])
         
-        # Left wall: 0, 1.05, 0.75; size 3.0, 0.1, 1.5
-        add_box(np.array([0, 1.05, 0.75]), np.array([3.0, 0.1, 1.5]))
+        # Left wall: y=1.05. Länge X geht von ca. -1.5 bis +1.5
+        p_left_back = np.array([-1.5, 1.05, 0.0])
+        p_left_front = np.array([1.5, 1.05, 0.0])
         
-        # Right wall: 0, -1.05, 0.75; size 3.0, 0.1, 1.5
-        add_box(np.array([0, -1.05, 0.75]), np.array([3.0, 0.1, 1.5]))
-        
-        # Roof: 0, 0, 1.55; size 3.0, 2.2, 0.1
-        # Inner face at 1.5
-        add_box(np.array([0, 0, 1.55]), np.array([3.0, 2.2, 0.1]))
+        # Right wall: y=-1.05. Länge X geht von ca. -1.5 bis +1.5
+        p_right_back = np.array([-1.5, -1.05, 0.0])
+        p_right_front = np.array([1.5, -1.05, 0.0])
+
+        # Linien generieren (U-Form)
+        add_line(p_back_left, p_back_right)  # Rückwand
+        add_line(p_left_back, p_left_front)  # Linke Wand
+        add_line(p_right_back, p_right_front) # Rechte Wand
         
         return np.array(points, dtype=np.float32)
 
-    def preprocess_cloud(self, points):
-        """
-        Filters and downsamples the point cloud.
-        """
-        # Filter by Depth (Z in camera frame)
-        # Increased range to 8.0m to see back wall even from distance
-        mask = (points[:, 2] > 0.5) & (points[:, 2] < 8.0)
-        points = points[mask]
-        
-        # Filter by Height (Y in camera frame, Y is down)
-        # Ground is at Y > 0.20 roughly (Camera at 0.25m height)
-        mask_y = points[:, 1] < 0.20 
-        points = points[mask_y]
-        
-        # Random Downsampling
-        if len(points) > 1000:
-            idx = np.random.choice(len(points), 1000, replace=False)
-            points = points[idx]
+    def get_transform_matrix(self, target_frame, source_frame):
+        """Holt die TF-Transformation als 4x4 Matrix."""
+        try:
+            t = self.tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                rclpy.time.Time())
             
-        return points
+            trans = t.transform.translation
+            rot = t.transform.rotation
+            
+            T = np.eye(4)
+            T[:3, 3] = [trans.x, trans.y, trans.z]
+            r = R.from_quat([rot.x, rot.y, rot.z, rot.w])
+            T[:3, :3] = r.as_matrix()
+            return T
+        except TransformException:
+            return None
 
     def pc_callback(self, msg):
-        # 1. Pointcloud in Numpy wandeln
+        # 1. Hole Transformation Camera -> Robot Chassis
+        # Wir wollen alles im Roboter-Koordinatensystem rechnen, um Tilt zu ignorieren.
+        T_robot_cam = self.get_transform_matrix("robot/chassis", msg.header.frame_id)
+        if T_robot_cam is None:
+            return
+
+        # 2. Pointcloud lesen
         gen = point_cloud2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)
         raw_points = np.array(list(gen))
         if len(raw_points) == 0: return
         
-        scene_points = np.column_stack((raw_points['x'], raw_points['y'], raw_points['z']))
+        points_cam = np.column_stack((raw_points['x'], raw_points['y'], raw_points['z'])) # Nx3
         
-        # 2. Preprocessing
-        scene_points = self.preprocess_cloud(scene_points)
-        if len(scene_points) < 100: 
-            self.get_logger().warn(f"Not enough points after preprocessing: {len(scene_points)}")
+        # 3. Transformiere Punkte in den Robot-Frame (homogene Koordinaten)
+        points_hom = np.ones((len(points_cam), 4))
+        points_hom[:, :3] = points_cam
+        points_robot = np.dot(T_robot_cam, points_hom.T).T[:, :3] # Nx3 im Chassis Frame
+        
+        # 4. Filterung im Roboter-Frame
+        # Boden entfernen: Alles unter 5cm Höhe
+        # Decke entfernen: Alles über 1.0m Höhe
+        # Entfernung begrenzen: Nur Punkte im Umkreis von 5m
+        mask = (points_robot[:, 2] > 0.05) & \
+               (points_robot[:, 2] < 1.0) & \
+               (points_robot[:, 0] < 5.0) 
+        
+        scene_points = points_robot[mask]
+        
+        # Downsampling für Performance
+        if len(scene_points) > 500:
+            idx = np.random.choice(len(scene_points), 500, replace=False)
+            scene_points = scene_points[idx]
+            
+        if len(scene_points) < 50:
             return
 
-        # 3. Initial Guess
-        # If we have a previous good estimate, use it (Tracking).
-        # Otherwise, use Centroid Alignment (Initialization).
-        
+        # 5. 2D PROJEKTION: Zwinge alle Punkte auf Z=0
+        scene_points[:, 2] = 0.0
+
+        # 6. Initial Guess (Tracking oder Initialisierung)
         if self.last_transform is not None:
              T_init = self.last_transform
         else:
-            # Centroid Alignment (Fallback)
+            # Einfaches Centroid Alignment für den Start
             centroid_src = np.mean(scene_points, axis=0)
             centroid_dst = np.mean(self.reference_cloud, axis=0)
-            translation_init = centroid_dst - centroid_src
-            
+            translation = centroid_dst - centroid_src
             T_init = np.eye(4)
-            T_init[:3, 3] = translation_init
+            T_init[:3, 3] = translation
+
+        # 7. ICP (Source: Scene, Target: Reference)
+        # Findet Transform T, so dass: Ref = T * Scene
+        # Das bedeutet T ist T_hut_robot (Pose der Hütte relativ zum Roboter ist aber das Inverse!)
+        T_hut_robot, fitness, _ = self.icp(scene_points, self.reference_cloud, init_pose=T_init)
         
-        # 4. ICP
-        # Returns T that maps Scene -> Reference (Camera Frame -> Hut Frame)
-        # So T = T_hut_cam
-        # 4. ICP
-        # Returns T that maps Scene -> Reference (Camera Frame -> Hut Frame)
-        # So T = T_hut_cam
-        # max_correspondence_distance=0.5 means points > 50cm away from model are ignored.
-        T_hut_cam, fitness, iterations = self.icp(scene_points, self.reference_cloud, init_pose=T_init, max_correspondence_distance=0.5)
-        
-        # fitness is now a float (mean error of inliers)
-        # fitness = np.mean(distances) # Old way
-        if fitness > 0.05: # Threshold
-            self.get_logger().warn(f"ICP fitness poor: {fitness:.4f} (Iter: {iterations})")
-            # If tracking failed, reset it to force Centroid Alignment next time?
-            # Or keep it? If we reset, we might jump.
-            # Let's reset if it's REALLY bad.
-            if fitness > 0.1:
-                self.last_transform = None
+        if fitness > 0.1: # Fitness Threshold (in Metern)
+            self.get_logger().warn(f"ICP schlechte Qualität: {fitness:.3f}")
+            if fitness > 0.5: self.last_transform = None # Reset bei Tracking-Verlust
             return
-        
-        # Update Tracking
-        self.last_transform = T_hut_cam
-        
-        self.get_logger().info(f"ICP Success. Fitness: {fitness:.4f}. Publishing Pose.")
 
-        # 5. Transform to Robot Frame
-        # We have T_hut_cam (Scene in Hut Frame)
-        # We want Pose of Hut in Robot Frame: T_robot_hut
-        # T_robot_hut = T_robot_cam * T_cam_hut
-        # Wait, T_hut_cam maps points from Cam to Hut: P_hut = T_hut_cam * P_cam
-        # This means T_hut_cam represents the Camera Pose in Hut Frame.
-        # Inverse: T_cam_hut = inv(T_hut_cam) represents Hut Pose in Camera Frame.
-        
-        T_cam_hut = np.linalg.inv(T_hut_cam)
-        
-        try:
-            # Get T_robot_cam
-            # We want transform from robot/chassis to camera frame (to transform Hut Pose from Cam to Robot)
-            # T_robot_hut = T_robot_cam * T_cam_hut
-            t = self.tf_buffer.lookup_transform(
-                'robot/chassis',
-                msg.header.frame_id, # Camera Frame
-                rclpy.time.Time())
-                
-            # Convert TF to Matrix
-            t_trans = t.transform.translation
-            t_rot = t.transform.rotation
-            
-            T_robot_cam = np.eye(4)
-            T_robot_cam[:3, 3] = [t_trans.x, t_trans.y, t_trans.z]
-            r = R.from_quat([t_rot.x, t_rot.y, t_rot.z, t_rot.w])
-            T_robot_cam[:3, :3] = r.as_matrix()
-            
-            # Compute Final Pose
-            T_robot_hut = np.dot(T_robot_cam, T_cam_hut)
-            
-            # 6. Publish
-            pose_msg = PoseStamped()
-            pose_msg.header.stamp = self.get_clock().now().to_msg()
-            pose_msg.header.frame_id = "robot/chassis"
-            
-            pose_msg.pose.position.x = T_robot_hut[0, 3]
-            pose_msg.pose.position.y = T_robot_hut[1, 3]
-            pose_msg.pose.position.z = T_robot_hut[2, 3]
-            
-            quat = R.from_matrix(T_robot_hut[:3, :3]).as_quat()
-            pose_msg.pose.orientation.x = quat[0]
-            pose_msg.pose.orientation.y = quat[1]
-            pose_msg.pose.orientation.z = quat[2]
-            pose_msg.pose.orientation.w = quat[3]
-            
-            self.publisher_.publish(pose_msg)
-            
-        except TransformException as ex:
-            self.get_logger().error(f'Could not transform: {ex}')
+        self.last_transform = T_hut_robot
 
+        # 8. Pose berechnen
+        # ICP liefert T_hut_robot (Transformiert Punkte VOM Roboter ZUR Hütte)
+        # Die Pose der Hütte im Roboter-Frame ist aber genau die Umkehrung (oder Matrix direkt?)
+        # Moment: ICP Formel: dst = T * src. 
+        # src=RobotFrame, dst=HutFrame. -> P_hut = T * P_robot.
+        # Die Pose der Hütte (Wo ist die Hütte?) wird durch die Translation von T_robot_hut beschrieben.
+        # Also brauchen wir T_robot_hut = inv(T_hut_robot).
+        
+        T_robot_hut = np.linalg.inv(T_hut_robot)
+        
+        # Erzwinge 2D Pose (kein Roll/Pitch, Z=0)
+        pose_msg = PoseStamped()
+        pose_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_msg.header.frame_id = "robot/chassis"
+        
+        pose_msg.pose.position.x = T_robot_hut[0, 3]
+        pose_msg.pose.position.y = T_robot_hut[1, 3]
+        pose_msg.pose.position.z = 0.0 # Force Floor
+        
+        # Rotation extrahieren, aber nur Yaw (Drehung um Z)
+        rot_mat = T_robot_hut[:3, :3]
+        r = R.from_matrix(rot_mat)
+        euler = r.as_euler('xyz')
+        # Nur Yaw behalten, Roll/Pitch nullen
+        r_clean = R.from_euler('xyz', [0, 0, euler[2]])
+        quat = r_clean.as_quat()
+        
+        pose_msg.pose.orientation.x = quat[0]
+        pose_msg.pose.orientation.y = quat[1]
+        pose_msg.pose.orientation.z = quat[2]
+        pose_msg.pose.orientation.w = quat[3]
+        
+        self.publisher_.publish(pose_msg)
 
+    # --- Standard ICP Hilfsfunktionen (unverändert zur Logik, nur sauberer) ---
     def best_fit_transform(self, A, B):
-        '''
-        Calculates the least-squares best-fit transform that maps corresponding points A to B in m spatial dimensions
-        '''
-        assert A.shape == B.shape
-
-        # translate points to their centroids
         centroid_A = np.mean(A, axis=0)
         centroid_B = np.mean(B, axis=0)
         AA = A - centroid_A
         BB = B - centroid_B
-
-        # rotation matrix
         H = np.dot(AA.T, BB)
         U, S, Vt = np.linalg.svd(H)
         R_mat = np.dot(Vt.T, U.T)
-
-        # special reflection case
         if np.linalg.det(R_mat) < 0:
             Vt[2,:] *= -1
             R_mat = np.dot(Vt.T, U.T)
-
-        # translation
         t = centroid_B.T - np.dot(R_mat, centroid_A.T)
-
-        # homogeneous transformation
         T = np.identity(4)
         T[:3, :3] = R_mat
         T[:3, 3] = t
-
+        
         return T, R_mat, t
 
-    def nearest_neighbor(self, src, dst):
-        '''
-        Find the nearest (Euclidean) neighbor in dst for each point in src
-        '''
-        # Use pre-built tree if available
-        if hasattr(self, 'reference_tree'):
-            distances, indices = self.reference_tree.query(src)
-        else:
-            # Fallback
-            tree = KDTree(dst)
-            distances, indices = tree.query(src)
-            
-        return distances, indices
-
-    def icp(self, A, B, init_pose=None, max_iterations=20, tolerance=0.001, max_correspondence_distance=0.5):
-        '''
-        The Iterative Closest Point method: aligns source A to target B
-        '''
+    def icp(self, A, B, init_pose=None, max_iterations=20, tolerance=0.001):
         src = np.copy(A)
-        dst = np.copy(B)
-
+        dst = np.copy(B) # Reference
+        
         if init_pose is not None:
-            src = np.ones((src.shape[0], 4))
-            src[:,0:3] = A
-            src = np.dot(init_pose, src.T).T
-            src = src[:,0:3]
-
-        prev_error = 0
-
-        for i in range(max_iterations):
-            # find the nearest neighbors between the current source and destination points
-            distances, indices = self.nearest_neighbor(src, dst)
-
-            # Outlier Rejection: Filter correspondences that are too far
-            valid_mask = distances < max_correspondence_distance
-            
-            # Check if we have enough points to continue
-            if np.sum(valid_mask) < 10:
-                # self.get_logger().warn("ICP lost too many points during outlier rejection.")
-                break
-
-            src_valid = src[valid_mask]
-            dst_valid = dst[indices[valid_mask]]
-
-            # compute the transformation between the current source and nearest destination points
-            T, _, _ = self.best_fit_transform(src_valid, dst_valid)
-
-            # update the current source
             src_h = np.ones((src.shape[0], 4))
             src_h[:,0:3] = src
-            src_h = np.dot(T, src_h.T).T
-            src = src_h[:,0:3]
+            src = np.dot(init_pose, src_h.T).T[:, :3]
 
-            # check error (only on valid points)
-            mean_error = np.mean(distances[valid_mask])
+        prev_error = 0
+        final_T = init_pose if init_pose is not None else np.eye(4)
+
+        for i in range(max_iterations):
+            # Nearest Neighbors
+            distances, indices = self.reference_tree.query(src)
+            
+            # Outlier Rejection (nur Punkte die nah an der Modell-Kontur sind)
+            valid = distances < 0.5 
+            if np.sum(valid) < 10: break
+            
+            src_valid = src[valid]
+            dst_valid = dst[indices[valid]]
+            
+            # Berechne Delta-Transform für diesen Schritt
+            T, _, _ = self.best_fit_transform(src_valid, dst_valid)
+            
+            # Update Source
+            src_h = np.ones((src.shape[0], 4))
+            src_h[:,0:3] = src
+            src = np.dot(T, src_h.T).T[:, :3]
+            
+            # Update Gesamt-Transform
+            final_T = np.dot(T, final_T)
+            
+            mean_error = np.mean(distances[valid])
             if np.abs(prev_error - mean_error) < tolerance:
                 break
             prev_error = mean_error
 
-        # calculate final transformation
-        # We should probably recalculate T one last time on the final valid set or just use the accumulated T?
-        # The standard way is to return the transformation that aligns A to the final src.
-        # But wait, 'src' has been transformed in place.
-        # So we find T that maps A to src.
+        # Fitness Check am Ende
+        distances, _ = self.reference_tree.query(src)
+        fitness = np.mean(distances[distances < 0.5]) if np.any(distances < 0.5) else 100.0
         
-        # Refine: Use only inliers for the final transform calculation? 
-        # Actually, 'src' is already the transformed version of A. 
-        # So we just find the best fit from A to src.
-        # BUT, if we want the fitness to reflect the inliers, we should be careful.
-        
-        # Let's re-calculate distances for the final pose to get the true fitness
-        distances, indices = self.nearest_neighbor(src, dst)
-        valid_mask = distances < max_correspondence_distance
-        if np.sum(valid_mask) > 0:
-             final_fitness = np.mean(distances[valid_mask])
-        else:
-             final_fitness = 100.0 # Bad fitness
-
-        T, _, _ = self.best_fit_transform(A, src)
-        
-        return T, final_fitness, i
+        return final_T, fitness, i
 
 def main(args=None):
     rclpy.init(args=args)
