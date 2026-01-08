@@ -61,7 +61,7 @@ class DockingController(Node):
         self.MAX_ANGULAR_SPEED = 1.0
         
         # Ziel-Parameter für das Docking (Generisch)
-        self.DOCKING_TARGET_DISTANCE = 1.9 # Meter vor dem Ziel stoppen
+        self.DOCKING_TARGET_DISTANCE = 0.45 # Meter vom Hüttenzentrum entfernt stoppen (entspricht 1.9m von Rückwand)
         self.ALIGN_Y_TOLERANCE = 0.05      # 5cm Toleranz seitlich
         self.ALIGN_YAW_TOLERANCE = 0.05    # ca. 3 Grad Toleranz
         

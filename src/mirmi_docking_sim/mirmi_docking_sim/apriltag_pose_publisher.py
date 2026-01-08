@@ -30,16 +30,46 @@ class AprilTagPosePublisher(Node):
                 self.target_tag_frame,
                 rclpy.time.Time())
             
-            pose_msg = PoseStamped()
-            pose_msg.header.stamp = self.get_clock().now().to_msg()
-            pose_msg.header.frame_id = self.robot_frame
+            # --- NEU: Transform zum HÜTTEN-ZENTRUM ---
+            # Tag 1 (tag36_11_00001) ist bei (-1.399, 0, 0.75) relativ zum Hüttenzentrum.
+            # Aber wir brauchen die Hut-Pose im Roboter-Frame.
+            # T_robot_hut = T_robot_tag * T_tag_hut
             
-            pose_msg.pose.position.x = t.transform.translation.x
-            pose_msg.pose.position.y = t.transform.translation.y
-            pose_msg.pose.position.z = t.transform.translation.z
-            pose_msg.pose.orientation = t.transform.rotation
+            # T_hut_tag: Pose des Tags in der Hütte
+            # x=-1.399, y=0, z=0.75
+            # r=0, p=-1.5708, y=0
             
-            self.publisher_.publish(pose_msg)
+            # Wir machen es einfacher: Da wir wissen, dass der Tag flach an der Rückwand klebt,
+            # ist die Translation einfach ein Offset in der lokalen Z-Achse des Tags (wenn Z nach draußen zeigt).
+            # Laut Gazebo/SDF: Der Tag ist um -1.5708 um Y rotiert. 
+            # Das bedeutet die lokale Z-Achse des Tags zeigt in die Hütte hinein (Richtung X-Hütte).
+            # Der Abstand vom Tag (-1.399) zum Zentrum (0) ist 1.399 Meter.
+            
+            # Wir nutzen tf2_geometry_msgs für eine saubere Transformation
+            tag_to_hut = PoseStamped()
+            tag_to_hut.header.frame_id = self.target_tag_frame
+            # Offset: Der Tag ist bei x=-1.399. Das Zentrum ist bei x=0.
+            # In der lokalen Orientierung des Tags (r=0, p=-1.5708, y=0) 
+            # zeigt die lokale Z-Achse in die Hütte.
+            tag_to_hut.pose.position.z = 1.399 # Gehe 1.399m "vorwärts" vom Tag ins Zentrum
+            # Wir nullen auch die Höhe (Z im Roboter-Frame) später im Controller/Publisher wenn nötig,
+            # aber hier halten wir es konsistent.
+            
+            try:
+                hut_pose_robot = tf2_geometry_msgs.do_transform_pose(tag_to_hut.pose, t)
+                
+                pose_msg = PoseStamped()
+                pose_msg.header.stamp = self.get_clock().now().to_msg()
+                pose_msg.header.frame_id = self.robot_frame
+                
+                pose_msg.pose.position.x = hut_pose_robot.position.x
+                pose_msg.pose.position.y = hut_pose_robot.position.y
+                pose_msg.pose.position.z = hut_pose_robot.position.z
+                pose_msg.pose.orientation = hut_pose_robot.orientation
+                
+                self.publisher_.publish(pose_msg)
+            except Exception as e:
+                self.get_logger().error(f"Transform failure: {e}")
             
         except TransformException:
             # Tag gerade nicht sichtbar
